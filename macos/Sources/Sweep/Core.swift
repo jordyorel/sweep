@@ -92,6 +92,36 @@ struct AppCheck: Codable, Sendable {
     let verdict: Verdict
 }
 
+struct JobSignature: Codable, Sendable {
+    let adhoc: Bool
+    let teamId: String?
+    let authority: [String]
+    let apple: Bool
+}
+
+struct LaunchJob: Codable, Sendable, Identifiable {
+    let plist: String
+    let label: String?
+    let program: String?
+    let arguments: [String]
+    let runAtLoad: Bool
+    let keepAlive: Bool
+    let daemon: Bool
+    let signature: JobSignature?
+    let quarantined: Bool
+    let flags: [String]
+    let detections: [Detection]
+    /// info, low, medium, high
+    let risk: String
+    var id: String { plist }
+}
+
+struct FolderScan: Codable, Sendable {
+    let path: String
+    let xprotectVersion: String
+    let summary: ScanSummary
+}
+
 struct Journal: Codable, Sendable, Identifiable {
     let id: String
     let appName: String
@@ -132,6 +162,19 @@ enum Core {
     static func beginCheck() -> UInt64 { sweep_check_begin() }
 
     static func check(_ app: String, token: UInt64) throws -> AppCheck { try call { sweep_check(app, token) } }
+
+    static func persistence() throws -> [LaunchJob] { try call { sweep_persistence() } }
+
+    static func beginFolderScan() -> UInt64 { sweep_scan_begin() }
+    static func cancelFolderScan() { sweep_scan_cancel() }
+    static func folderScanProgress() -> UInt64 { sweep_scan_progress() }
+    static func scanFolder(_ path: String, token: UInt64) throws -> FolderScan { try call { sweep_scan_folder(path, token) } }
+
+    /// `kind`: "launch_item" or "malware". Each path is re-checked by the core before it is moved.
+    static func trashFindings(kind: String, paths: [String]) throws -> Outcome {
+        let json = String(decoding: try JSONEncoder().encode(paths), as: UTF8.self)
+        return try call { sweep_trash_findings(kind, json) }
+    }
 
     static func journals() throws -> [Journal] { try call { sweep_journals() } }
 

@@ -8,9 +8,10 @@ use std::ffi::{c_char, CStr, CString};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
-use sweep_malware::check;
-use sweep_malware::xprotect::Rules;
-use sweep_core::removal;
+use sweep_malware::xprotect::{Rules, ScanSummary, DEFAULT_MAX_FILE_SIZE};
+use sweep_malware::{check, persistence};
+use sweep_core::removal::{self, Plan, PlanItem};
+use sweep_core::Category;
 use sweep_core::{Env, Options};
 
 fn respond<T: Serialize>(f: impl FnOnce() -> Result<T> + std::panic::UnwindSafe) -> *mut c_char {
@@ -115,6 +116,124 @@ pub unsafe extern "C" fn sweep_check(app_path: *const c_char, token: u64) -> *mu
         let stale = || CHECK_TOKEN.load(Ordering::SeqCst) != token;
         Ok(check::app(&app, rules()?, &stale))
     })
+}
+
+/// Launch agents and daemons with their red flags, riskiest first (`[LaunchJob]`).
+#[no_mangle]
+pub extern "C" fn sweep_persistence() -> *mut c_char {
+    respond(|| {
+        let mut jobs = persistence::audit(&home(), Some(rules()?));
+        // Sweep's own watch agent (installed from this app bundle) is not a finding.
+        let own_plist = home().join("Library/LaunchAgents/dev.sweep.watch.plist");
+        let own_helper = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.parent()?.join("Helpers/sweep")));
+        for j in &mut jobs {
+            if j.plist == own_plist && j.program.is_some() && j.program == own_helper {
+                j.risk = persistence::Risk::Info;
+                j.flags = vec!["Sweep's own background watch (turn it off with the switch in the sidebar)".into()];
+            }
+        }
+        jobs.sort_by(|a, b| b.risk.cmp(&a.risk).then_with(|| a.plist.cmp(&b.plist)));
+        Ok(jobs)
+    })
+}
+
+/// Latest folder-scan token (a newer scan, or [`sweep_scan_cancel`], stops the running one) and its progress.
+static SCAN_TOKEN: AtomicU64 = AtomicU64::new(0);
+static SCAN_PROGRESS: AtomicU64 = AtomicU64::new(0);
+
+#[no_mangle]
+pub extern "C" fn sweep_scan_begin() -> u64 {
+    SCAN_PROGRESS.store(0, Ordering::SeqCst);
+    SCAN_TOKEN.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+/// Stop the running folder scan; it returns what it found so far with `cancelled: true`.
+#[no_mangle]
+pub extern "C" fn sweep_scan_cancel() {
+    SCAN_TOKEN.fetch_add(1, Ordering::SeqCst);
+}
+
+/// Items (files and folders) visited so far by the running folder scan.
+#[no_mangle]
+pub extern "C" fn sweep_scan_progress() -> u64 {
+    SCAN_PROGRESS.load(Ordering::SeqCst)
+}
+
+#[derive(serde::Serialize)]
+struct FolderScan {
+    path: PathBuf,
+    xprotect_version: String,
+    summary: ScanSummary,
+}
+
+/// Scan a file or folder with XProtect's signatures (`FolderScan`). Blocking; see [`sweep_scan_begin`].
+///
+/// # Safety
+/// `path` must be a valid NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn sweep_scan_folder(path: *const c_char, token: u64) -> *mut c_char {
+    let path = unsafe { arg(path) };
+    respond(move || {
+        let path = PathBuf::from(path?.context("missing path")?);
+        let rules = rules()?;
+        let mut summary = ScanSummary::default();
+        let stop = || {
+            SCAN_PROGRESS.fetch_add(1, Ordering::Relaxed);
+            SCAN_TOKEN.load(Ordering::SeqCst) != token
+        };
+        rules.scan_until(&path, DEFAULT_MAX_FILE_SIZE, &mut summary, &stop);
+        Ok(FolderScan { path, xprotect_version: rules.version.clone(), summary })
+    })
+}
+
+/// Move security findings to the Trash, with undo (`Outcome`). `kind` is `launch_item` or `malware`.
+///
+/// Each path is re-checked first, so a stale or forged list cannot trash arbitrary files:
+/// a launch item must still be a plist in one of the launch folders, a malware file must still match
+/// an XProtect signature right now.
+///
+/// # Safety
+/// Both arguments must be valid NUL-terminated strings.
+#[no_mangle]
+pub unsafe extern "C" fn sweep_trash_findings(kind: *const c_char, paths_json: *const c_char) -> *mut c_char {
+    let (kind, paths) = unsafe { (arg(kind), arg(paths_json)) };
+    respond(move || {
+        let kind = kind?.context("missing kind")?;
+        let paths: Vec<PathBuf> = serde_json::from_str(&paths?.context("missing paths")?)?;
+        anyhow::ensure!(!paths.is_empty(), "nothing to move");
+        let home = home();
+        let mut items = Vec::new();
+        for p in &paths {
+            let (category, reason) = match kind.as_str() {
+                "launch_item" => {
+                    let (_, daemon) = persistence::job_plists(&home)
+                        .into_iter()
+                        .find(|(j, _)| j == p)
+                        .with_context(|| format!("{} is not a launch item (any more)", p.display()))?;
+                    (if daemon { Category::LaunchDaemons } else { Category::LaunchAgents }, "launch item flagged by the audit")
+                }
+                "malware" => {
+                    let mut s = ScanSummary::default();
+                    rules()?.scan(p, DEFAULT_MAX_FILE_SIZE, &mut s);
+                    anyhow::ensure!(!s.detections.is_empty(), "{} no longer matches a malware signature", p.display());
+                    (Category::Other, "matches an XProtect malware signature")
+                }
+                other => anyhow::bail!("unknown kind {other}"),
+            };
+            items.push(PlanItem { path: p.clone(), category, reason: reason.into(), size: sweep_core::leftovers::allocated_size(p) });
+        }
+        let name = match kind.as_str() {
+            "launch_item" => "Launch items",
+            _ => "Malware",
+        };
+        let plan = Plan { app_name: name.into(), app_path: paths[0].clone(), items };
+        // allow_running: there is no app bundle here; a running daemon is booted out by launchd rules, not by us.
+        removal::execute(&plan, &Env::system(), &removal::System, true)
+    })
+}
+
+fn home() -> PathBuf {
+    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| "/var/empty".into())
 }
 
 /// Removals that can still be undone, newest first (`[Journal]`).

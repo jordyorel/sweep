@@ -1,8 +1,11 @@
 import AppKit
 import Observation
 
+enum Section: String, CaseIterable { case apps = "Apps", security = "Security" }
+
 @MainActor @Observable
 final class AppModel {
+    var section: Section = ProcessInfo.processInfo.arguments.contains("--security") ? .security : .apps
     var apps: [AppBundle] = []
     var search = ""
     var selectedApp: String?

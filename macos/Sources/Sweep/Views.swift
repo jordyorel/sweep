@@ -8,12 +8,14 @@ struct SweepApp: App {
     // Command Line Tools cannot expand (no SwiftUIMacros plugin without Xcode).
     private let model = AppModel()
     private let watch = WatchModel()
+    private let security = SecurityModel()
 
     var body: some Scene {
         WindowGroup("Sweep") {
             ContentView()
                 .environment(model)
                 .environment(watch)
+                .environment(security)
                 .frame(minWidth: 1000, minHeight: 560)
         }
         .commands {
@@ -36,23 +38,37 @@ struct ContentView: View {
             // under the title bar, the search field scrolled away, and a black separator line was drawn across the
             // window buttons. Here the list starts below the title bar and nothing scrolls under it.
             VStack(spacing: 0) {
-                SidebarSearchField(text: Binding(get: { model.search }, set: { model.search = $0 }))
-                Divider()
-            ScrollViewReader { proxy in
-                List(model.filteredApps, id: \.path, selection: Binding(get: { model.selectedApp }, set: { model.selectedApp = $0 })) { app in
-                    AppRow(path: app.path, name: app.name, subtitle: app.version)
+                Picker("Section", selection: Binding(get: { model.section }, set: { model.section = $0 })) {
+                    ForEach(Section.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }
-                .onChange(of: model.apps.count) { _, _ in
-                    // Dev hook: `--scroll-bottom` scrolls the list to the end, to check scrolling by screenshot.
-                    if ProcessInfo.processInfo.arguments.contains("--scroll-bottom"), let last = model.apps.last {
-                        proxy.scrollTo(last.path, anchor: .bottom)
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .padding(.horizontal, 10).padding(.top, 8)
+                if model.section == .apps {
+                    SidebarSearchField(text: Binding(get: { model.search }, set: { model.search = $0 }))
+                    Divider()
+                    ScrollViewReader { proxy in
+                        List(model.filteredApps, id: \.path, selection: Binding(get: { model.selectedApp }, set: { model.selectedApp = $0 })) { app in
+                            AppRow(path: app.path, name: app.name, subtitle: app.version)
+                        }
+                        .onChange(of: model.apps.count) { _, _ in
+                            // Dev hook: `--scroll-bottom` scrolls the list to the end, to check scrolling by screenshot.
+                            if ProcessInfo.processInfo.arguments.contains("--scroll-bottom"), let last = model.apps.last {
+                                proxy.scrollTo(last.path, anchor: .bottom)
+                            }
+                        }
                     }
+                } else {
+                    Divider().padding(.top, 8)
+                    SecuritySidebar()
                 }
-            }
                 WatchSidebarRow()
             }
             .navigationSplitViewColumnWidth(min: 220, ideal: 260)
         } detail: {
+            if model.section == .security {
+                SecurityDetail()
+            } else {
             VStack(spacing: 0) {
                 Banners()
                 if let report = model.report {
@@ -66,12 +82,14 @@ struct ContentView: View {
                     }
                 }
             }
+            }
         }
         .onDrop(of: [.fileURL], isTargeted: dropTargeted.projectedValue) { providers in
             guard let p = providers.first else { return false }
             _ = p.loadObject(ofClass: URL.self) { url, _ in
                 guard let url, url.pathExtension.lowercased() == "app" else { return }
                 Task { @MainActor in
+                    model.section = .apps
                     model.selectedApp = nil
                     await model.scan(url.path)
                 }
