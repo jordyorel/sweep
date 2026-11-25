@@ -94,7 +94,7 @@ signatures, launch-item audit, background watch), exposed to the SwiftUI app (`m
 Sweep is free. If it helped you, a donation helps pay for an Apple Developer account, so Sweep can be notarized and
 open without the warning above.
 
-<!-- TODO: donation link (Ko-fi, GitHub Sponsors, PayPal…) -->
+[![Sponsor on GitHub](https://img.shields.io/badge/Sponsor-%E2%9D%A4-db61a2?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/jordyorel)
 
 ## License
 
