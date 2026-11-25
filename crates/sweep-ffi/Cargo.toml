@@ -13,3 +13,4 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sweep-core = { path = "../sweep-core" }
+sweep-malware = { path = "../sweep-malware" }

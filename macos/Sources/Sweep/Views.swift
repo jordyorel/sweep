@@ -178,6 +178,10 @@ struct LeftoversView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            if model.check?.verdict.level == "danger" {
+                Banner(icon: "xmark.shield.fill", tint: .red,
+                       text: "This app looks malicious: \(model.check!.verdict.headline). Moving it and all its leftovers to the Trash is recommended.") { EmptyView() }
+            }
             Divider()
             List(report.findings) { f in
                 FindingRow(finding: f, locked: report.sipProtected)
@@ -201,6 +205,7 @@ struct LeftoversView: View {
                 }
             }
             Spacer()
+            SecurityBadge()
             Button {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: report.bundle.path)])
             } label: { Label("Show in Finder", systemImage: "folder") }
@@ -265,5 +270,76 @@ struct FindingRow: View {
                 NSPasteboard.general.setString(finding.path, forType: .string)
             }
         }
+    }
+}
+
+struct SecurityBadge: View {
+    @Environment(AppModel.self) private var model
+    private let showing = State(initialValue: false) // no @State macro with the Command Line Tools
+
+    var body: some View {
+        Group {
+            if model.checking {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Checking security…").foregroundStyle(.secondary)
+                }
+            } else if let c = model.check {
+                Button { showing.wrappedValue = true } label: {
+                    Label(c.verdict.headline, systemImage: Self.icon(c.verdict.level))
+                        .lineLimit(1)
+                        .foregroundStyle(Self.tint(c.verdict.level))
+                }
+                .buttonStyle(.borderless)
+                .frame(maxWidth: 320)
+                .popover(isPresented: showing.projectedValue, arrowEdge: .bottom) { SecurityDetails(check: c) }
+            } else if let e = model.checkError {
+                Label("Check failed", systemImage: "questionmark.diamond").foregroundStyle(.secondary).help(e)
+            }
+        }
+    }
+
+    static func icon(_ level: String) -> String {
+        switch level {
+        case "ok": "checkmark.shield.fill"
+        case "info": "info.circle.fill"
+        case "warning": "exclamationmark.shield.fill"
+        default: "xmark.shield.fill"
+        }
+    }
+
+    static func tint(_ level: String) -> Color {
+        switch level {
+        case "ok": .green
+        case "info": .blue
+        case "warning": .orange
+        default: .red
+        }
+    }
+}
+
+struct SecurityDetails: View {
+    let check: AppCheck
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(check.verdict.headline, systemImage: SecurityBadge.icon(check.verdict.level))
+                .font(.headline).foregroundStyle(SecurityBadge.tint(check.verdict.level))
+            if !check.verdict.reasons.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(check.verdict.reasons, id: \.self) { r in
+                        Text("• " + r).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            Divider()
+            Text("XProtect \(check.xprotectVersion): \(check.scan.filesScanned) files scanned, \(check.scan.detections.count) detections")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("Signature, Gatekeeper and quarantine are checked with Apple's own tools. This is an on-demand check, not real-time protection.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .frame(width: 380)
+        .textSelection(.enabled)
     }
 }

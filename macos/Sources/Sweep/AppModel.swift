@@ -11,6 +11,12 @@ final class AppModel {
     /// Paths the user wants removed. Starts as the scanner's default selection.
     var chosen: Set<String> = []
 
+    /// Security check of the selected app, run in the background while the leftovers are shown.
+    var check: AppCheck?
+    var checkError: String?
+    var checking = false
+    private var checkPath: String?
+
     var busy = false
     var error: String?
     /// Last removal, shown in a banner with an Undo button.
@@ -35,6 +41,7 @@ final class AppModel {
     }
 
     func scan(_ path: String) async {
+        startCheck(path)
         busy = true
         error = nil
         report = nil
@@ -45,6 +52,23 @@ final class AppModel {
             chosen = Set(r.findings.filter(\.selected).map(\.path))
         } catch {
             self.error = error.localizedDescription
+        }
+    }
+
+    private func startCheck(_ path: String) {
+        check = nil
+        checkError = nil
+        checking = true
+        checkPath = path
+        let token = Core.beginCheck() // makes the previous app's check stop
+        Task {
+            let result = await Task.detached { Result { try Core.check(path, token: token) } }.value
+            guard checkPath == path else { return } // the user moved on
+            checking = false
+            switch result {
+            case .success(let c): check = c
+            case .failure(let e): checkError = e.localizedDescription
+            }
         }
     }
 

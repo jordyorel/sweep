@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::io::{BufRead, IsTerminal, Write};
 use sweep_core::removal::{self, Outcome};
 use sweep_core::{Env, Options};
-use sweep_malware::{persistence, signing, xprotect};
+use sweep_malware::{check, persistence, xprotect};
 
 #[derive(Parser)]
 #[command(name = "sweep", version, about = "Uninstall apps (to the Trash, with undo) and check for malware on macOS")]
@@ -218,26 +218,25 @@ fn main() -> Result<()> {
             println!("\n{total} launch jobs, {flagged} with red flags");
         }
         Cmd::Check { app } => {
-            let sig = signing::inspect(&app);
-            let quarantined = signing::is_quarantined(&app);
-            let (version, sum) = xprotect::scan_paths(std::slice::from_ref(&app), xprotect::DEFAULT_MAX_FILE_SIZE)?;
+            let rules = xprotect::Rules::load_system()?;
+            let c = check::app(&app, &rules, &|| false);
             if cli.json {
-                return print_json(&serde_json::json!({
-                    "signature": sig, "quarantined": quarantined, "xprotect_version": version, "scan": sum,
-                }));
+                return print_json(&c);
             }
+            let sig = &c.signature;
             println!("{}", app.display());
+            println!("  verdict:     [{:?}] {}", c.verdict.level, c.verdict.headline);
+            for r in &c.verdict.reasons {
+                println!("               - {r}");
+            }
             println!("  signature:   {:?}{}", sig.status, if sig.adhoc { " (ad-hoc)" } else { "" });
             println!("  signer:      {}", sig.authority.first().map(String::as_str).unwrap_or("-"));
             println!("  team id:     {}", sig.team_id.as_deref().unwrap_or("-"));
             if let Some(g) = &sig.gatekeeper {
                 println!("  gatekeeper:  {} ({})", if g.accepted { "accepted" } else { "REJECTED" }, g.source);
             }
-            println!("  quarantined: {quarantined}");
-            println!("  malware:     {} files scanned with XProtect {version}, {} detections", sum.files_scanned, sum.detections.len());
-            for d in &sum.detections {
-                println!("    !! {}  {}", d.rule, d.path.display());
-            }
+            println!("  quarantined: {}", c.quarantined);
+            println!("  malware:     {} files scanned with XProtect {}, {} detections", c.scan.files_scanned, c.xprotect_version, c.scan.detections.len());
         }
     }
     Ok(())

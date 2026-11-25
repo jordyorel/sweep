@@ -63,6 +63,35 @@ struct UndoOutcome: Codable, Sendable {
     let failed: [Problem]
 }
 
+struct Verdict: Codable, Sendable {
+    /// ok, info, warning, danger
+    let level: String
+    let headline: String
+    let reasons: [String]
+}
+
+struct Detection: Codable, Sendable {
+    let path: String
+    let rule: String
+    let description: String?
+}
+
+struct ScanSummary: Codable, Sendable {
+    let filesScanned: UInt64
+    let filesSkipped: UInt64
+    let detections: [Detection]
+    let errors: [String]
+    let cancelled: Bool
+}
+
+struct AppCheck: Codable, Sendable {
+    let path: String
+    let quarantined: Bool
+    let xprotectVersion: String
+    let scan: ScanSummary
+    let verdict: Verdict
+}
+
 struct Journal: Codable, Sendable, Identifiable {
     let id: String
     let appName: String
@@ -98,6 +127,11 @@ enum Core {
         let json = String(decoding: try JSONEncoder().encode(chosen), as: UTF8.self)
         return try call { sweep_remove(app, json, allowRunning) }
     }
+
+    /// Starts a new check and cancels any older one still running.
+    static func beginCheck() -> UInt64 { sweep_check_begin() }
+
+    static func check(_ app: String, token: UInt64) throws -> AppCheck { try call { sweep_check(app, token) } }
 
     static func journals() throws -> [Journal] { try call { sweep_journals() } }
 

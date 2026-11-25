@@ -6,6 +6,10 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use std::ffi::{c_char, CStr, CString};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
+use sweep_malware::check;
+use sweep_malware::xprotect::Rules;
 use sweep_core::removal;
 use sweep_core::{Env, Options};
 
@@ -81,6 +85,36 @@ fn overrides(report: &sweep_core::Report, chosen: &[PathBuf]) -> Result<(Vec<Pat
         .map(|f| f.path.clone())
         .collect();
     Ok((include, exclude))
+}
+
+/// XProtect rules are compiled once per process (about a second); errors are kept so they are reported each time.
+fn rules() -> Result<&'static Rules> {
+    static RULES: OnceLock<std::result::Result<Rules, String>> = OnceLock::new();
+    RULES.get_or_init(|| Rules::load_system().map_err(|e| format!("{e:#}"))).as_ref().map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// Latest check token: a check stops as soon as a newer one has started (the user picked another app).
+static CHECK_TOKEN: AtomicU64 = AtomicU64::new(0);
+
+/// Start a new check: returns its token and makes every older check stop early.
+#[no_mangle]
+pub extern "C" fn sweep_check_begin() -> u64 {
+    CHECK_TOKEN.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+/// Security check of one app (`AppCheck`): signature, notarization, quarantine, XProtect signatures.
+/// Slow on big apps; returns early with `scan.cancelled` once a newer [`sweep_check_begin`] happens.
+///
+/// # Safety
+/// `app_path` must be a valid NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn sweep_check(app_path: *const c_char, token: u64) -> *mut c_char {
+    let app = unsafe { arg(app_path) };
+    respond(move || {
+        let app = PathBuf::from(app?.context("missing app path")?);
+        let stale = || CHECK_TOKEN.load(Ordering::SeqCst) != token;
+        Ok(check::app(&app, rules()?, &stale))
+    })
 }
 
 /// Removals that can still be undone, newest first (`[Journal]`).
