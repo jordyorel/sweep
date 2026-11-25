@@ -1,6 +1,6 @@
 # Sweep
 
-**An open-source app uninstaller for macOS, with built-in malware checks.**
+**An open-source app uninstaller for macOS, with built-in malware checks.** · [Website](https://jordyorel.github.io/sweep/)
 
 Sweep removes an app *and* everything it leaves behind (preferences, caches, containers, launch agents, logs…),
 always to the Trash, with Undo. It also checks your Mac the way malware actually hides: programs that start on
@@ -94,7 +94,7 @@ signatures, launch-item audit, background watch), exposed to the SwiftUI app (`m
 Sweep is free. If it helped you, a donation helps pay for an Apple Developer account, so Sweep can be notarized and
 open without the warning above.
 
-[![Sponsor on GitHub](https://img.shields.io/badge/Sponsor-%E2%9D%A4-db61a2?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/jordyorel)
+Donations are in crypto: see the [Donate section of the website](https://jordyorel.github.io/sweep/#donate).
 
 ## License
 

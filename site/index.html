@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sweep — uninstall Mac apps cleanly, check for malware</title>
+<meta name="description" content="Sweep is a free, open-source macOS app uninstaller with built-in malware checks. Everything goes to the Trash, with Undo. Nothing leaves your Mac.">
+<link rel="icon" href="assets/icon.png">
+<meta property="og:title" content="Sweep for macOS">
+<meta property="og:description" content="Free, open-source app uninstaller with built-in malware checks.">
+<meta property="og:image" content="assets/overview.png">
+<style>
+  :root {
+    --bg: #0f1216;
+    --bg-2: #151a20;
+    --card: rgba(255, 255, 255, 0.045);
+    --card-border: rgba(255, 255, 255, 0.09);
+    --text: #eef2f6;
+    --muted: #9aa6b2;
+    --accent: #2bb8d6;
+    --accent-2: #2563eb;
+    --good: #34c759;
+    --warn: #ff9f0a;
+    --shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f8fb;
+      --bg-2: #ffffff;
+      --card: rgba(15, 30, 60, 0.04);
+      --card-border: rgba(15, 30, 60, 0.10);
+      --text: #111821;
+      --muted: #5b6673;
+      --shadow: 0 18px 50px rgba(20, 40, 80, 0.18);
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 16px; }
+
+  /* Nav */
+  nav { position: sticky; top: 0; z-index: 10; backdrop-filter: saturate(180%) blur(16px);
+        background: color-mix(in srgb, var(--bg) 78%, transparent); border-bottom: 1px solid var(--card-border); }
+  nav .wrap { display: flex; align-items: center; gap: 20px; height: 56px; }
+  nav .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; color: var(--text); }
+  nav .brand img { width: 28px; height: 28px; }
+  nav .links { margin-left: auto; display: flex; gap: 18px; font-size: 15px; }
+  nav .links a { color: var(--muted); }
+  nav .links a:hover { color: var(--text); text-decoration: none; }
+
+  /* Hero */
+  .hero { text-align: center; padding: 72px 0 40px; position: relative; overflow: hidden; }
+  .hero::before { content: ""; position: absolute; inset: -40% -10% auto; height: 520px; z-index: -1;
+                  background: radial-gradient(closest-side, rgba(43, 184, 214, 0.28), transparent 70%); }
+  .hero .icon { width: 116px; height: 116px; filter: drop-shadow(0 14px 30px rgba(37, 99, 235, 0.45)); }
+  .hero h1 { font-size: clamp(36px, 6vw, 58px); line-height: 1.08; margin: 20px 0 14px; letter-spacing: -0.02em; }
+  .hero h1 span { background: linear-gradient(120deg, #2dd4bf, #0ea5e9 45%, #2563eb); -webkit-background-clip: text;
+                  background-clip: text; color: transparent; }
+  .hero p.lead { font-size: clamp(17px, 2.2vw, 20px); color: var(--muted); max-width: 640px; margin: 0 auto 28px; }
+  .buttons { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .btn { display: inline-flex; align-items: center; gap: 8px; padding: 12px 22px; border-radius: 12px; font-weight: 600;
+         border: 1px solid var(--card-border); color: var(--text); background: var(--card); }
+  .btn:hover { text-decoration: none; filter: brightness(1.1); }
+  .btn.primary { color: #fff; border: 0; background: linear-gradient(135deg, #22c3c0, #1d6fe0);
+                 box-shadow: 0 10px 28px rgba(29, 111, 224, 0.38); }
+  .small { font-size: 13px; color: var(--muted); margin-top: 12px; }
+  .shot { margin: 44px auto 0; max-width: 980px; }
+  .shot img { width: 100%; border-radius: 14px; box-shadow: var(--shadow); display: block; }
+
+  /* Sections */
+  section { padding: 64px 0; }
+  section h2 { font-size: clamp(26px, 3.6vw, 36px); text-align: center; margin: 0 0 10px; letter-spacing: -0.01em; }
+  section .sub { text-align: center; color: var(--muted); max-width: 620px; margin: 0 auto 36px; }
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+  .card { background: var(--card); border: 1px solid var(--card-border); border-radius: 16px; padding: 22px; }
+  .card h3 { margin: 12px 0 6px; font-size: 18px; }
+  .card p { margin: 0; color: var(--muted); font-size: 15px; }
+  .tile { width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center; font-size: 20px; }
+  .t-blue { background: rgba(14, 165, 233, 0.16); }
+  .t-green { background: rgba(52, 199, 89, 0.16); }
+  .t-orange { background: rgba(255, 159, 10, 0.16); }
+  .t-purple { background: rgba(139, 92, 246, 0.16); }
+  .pair { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); margin-top: 28px; }
+  .pair figure { margin: 0; }
+  .pair img { width: 100%; border-radius: 12px; box-shadow: var(--shadow); display: block; }
+  .pair figcaption { text-align: center; color: var(--muted); font-size: 14px; margin-top: 10px; }
+
+  /* Steps */
+  .steps { counter-reset: s; display: grid; gap: 14px; max-width: 720px; margin: 0 auto; }
+  .step { counter-increment: s; display: flex; gap: 16px; align-items: flex-start; }
+  .step::before { content: counter(s); flex: 0 0 34px; height: 34px; border-radius: 50%; display: grid; place-items: center;
+                  font-weight: 700; color: #fff; background: linear-gradient(135deg, #22c3c0, #1d6fe0); }
+  .step p { margin: 4px 0 0; }
+  .note { max-width: 720px; margin: 22px auto 0; padding: 14px 18px; border-radius: 12px; font-size: 15px;
+          border: 1px solid rgba(255, 159, 10, 0.35); background: rgba(255, 159, 10, 0.08); }
+  code, kbd { font: 14px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--card); padding: 2px 6px;
+              border-radius: 6px; border: 1px solid var(--card-border); }
+  pre { background: var(--bg-2); border: 1px solid var(--card-border); border-radius: 12px; padding: 16px; overflow-x: auto; }
+  pre code { background: none; border: 0; padding: 0; }
+
+  /* Donate */
+  .wallets { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+  .wallet { display: flex; flex-direction: column; gap: 12px; align-items: center; text-align: center; }
+  .wallet .qr { background: #fff; padding: 10px; border-radius: 12px; line-height: 0; }
+  .wallet .coin { font-weight: 700; font-size: 18px; }
+  .wallet .net { color: var(--muted); font-size: 13px; }
+  .wallet .addr { word-break: break-all; font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
+  .copy { cursor: pointer; font: inherit; font-size: 14px; }
+  .empty { text-align: center; color: var(--muted); }
+
+  footer { border-top: 1px solid var(--card-border); padding: 28px 0 40px; color: var(--muted); font-size: 14px; }
+  footer .wrap { display: flex; gap: 16px; flex-wrap: wrap; justify-content: space-between; }
+
+  @media (max-width: 560px) {
+    nav .links a.hide-sm { display: none; }
+    .hero { padding-top: 48px; }
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <a class="brand" href="#"><img src="assets/icon.png" alt="">Sweep</a>
+    <div class="links">
+      <a class="hide-sm" href="#features">Features</a>
+      <a href="#install">Install</a>
+      <a href="#donate">Donate</a>
+      <a href="https://github.com/jordyorel/sweep">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <img class="icon" src="assets/icon.png" alt="Sweep icon">
+    <h1>Uninstall cleanly.<br><span>Check for malware.</span></h1>
+    <p class="lead">Sweep removes a Mac app <em>and</em> everything it leaves behind, and checks your Mac where malware
+      actually hides. Free, open source, and nothing ever leaves your Mac.</p>
+    <div class="buttons">
+      <a class="btn primary" href="https://github.com/jordyorel/sweep/releases/latest">⬇ Download for Mac</a>
+      <a class="btn" href="https://github.com/jordyorel/sweep">View the source</a>
+    </div>
+    <p class="small">macOS 14 or later · Free · MIT license</p>
+    <div class="shot"><img src="assets/overview.png" alt="Sweep security overview"></div>
+  </div>
+</header>
+
+<section id="features">
+  <div class="wrap">
+    <h2>Everything an app leaves behind</h2>
+    <p class="sub">Drag an app in, see every file it left with the reason it matched, and remove it all. Always to the Trash, with Undo.</p>
+    <div class="grid">
+      <div class="card"><div class="tile t-blue">🧹</div><h3>Complete uninstall</h3>
+        <p>Preferences, caches, containers, saved state, launch agents, logs and crash reports, found by bundle id and app name.</p></div>
+      <div class="card"><div class="tile t-green">↩︎</div><h3>Undo, always</h3>
+        <p>Nothing is deleted permanently. Everything goes to the Trash and comes back with ⌘Z, even system files.</p></div>
+      <div class="card"><div class="tile t-orange">🛡</div><h3>Careful by default</h3>
+        <p>Anything that might belong to something else, like a shared folder, is suggested but never ticked for you.</p></div>
+      <div class="card"><div class="tile t-purple">🔐</div><h3>System files, safely</h3>
+        <p>Items owned by macOS ask for your password, and Sweep checks each one again before moving it.</p></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Security checks built in</h2>
+    <p class="sub">Mac info-stealers typically hide as launch agents or daemons and keep scripts in hidden files. Sweep looks exactly there.</p>
+    <div class="grid">
+      <div class="card"><div class="tile t-orange">⏻</div><h3>Launch Items audit</h3>
+        <p>Programs macOS starts on its own, with red flags: hidden scripts, interpreters, unsigned code, world-writable paths.</p></div>
+      <div class="card"><div class="tile t-blue">🔍</div><h3>Malware Scan</h3>
+        <p>Quick Scan of the usual hiding places in a couple of minutes, Full Scan, or any folder, using Apple's XProtect signatures.</p></div>
+      <div class="card"><div class="tile t-green">👁</div><h3>Background Watch</h3>
+        <p>Re-checks launch items whenever one is added or changed, and notifies you when a suspicious one appears.</p></div>
+      <div class="card"><div class="tile t-purple">✓</div><h3>App check</h3>
+        <p>For every app: notarized or not, who signed it, whether it was downloaded, and whether it matches known malware.</p></div>
+    </div>
+    <div class="pair">
+      <figure><img src="assets/launch-items.png" alt="Launch Items"><figcaption>Launch Items</figcaption></figure>
+      <figure><img src="assets/malware-scan.png" alt="Malware Scan"><figcaption>Malware Scan</figcaption></figure>
+    </div>
+    <p class="small" style="text-align:center">An on-demand checker, not real-time antivirus protection.</p>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <h2>Install</h2>
+    <p class="sub">Download the disk image, open it, and drag Sweep to Applications.</p>
+    <div class="steps">
+      <div class="step"><div><strong>Download</strong><p>Get the latest <code>Sweep-x.y.z.dmg</code> from the
+        <a href="https://github.com/jordyorel/sweep/releases/latest">Releases page</a>, open it and drag Sweep to Applications.</p></div></div>
+      <div class="step"><div><strong>Open it once</strong><p>macOS shows a warning because Sweep is not notarized yet. Click <strong>Done</strong>.</p></div></div>
+      <div class="step"><div><strong>Allow it</strong><p>Open <strong>System Settings → Privacy &amp; Security</strong>, scroll to the message about Sweep,
+        click <strong>Open Anyway</strong> and confirm with your password. You only do this once.</p></div></div>
+      <div class="step"><div><strong>Optional: Full Disk Access</strong><p>To scan protected folders (Documents, Desktop, Mail…):
+        <strong>System Settings → Privacy &amp; Security → Full Disk Access → +</strong>, then choose Sweep.</p></div></div>
+    </div>
+    <div class="note">Why the warning? Notarization needs a paid Apple Developer account. Sweep is fully open source, so you can
+      read the code or <a href="https://github.com/jordyorel/sweep#build-from-source">build it yourself</a> instead.
+      Donations will pay for notarization.</div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Private by design</h2>
+    <p class="sub">No account, no telemetry, no cloud. Scans use the signatures Apple already ships with macOS, read on your Mac.
+      There is also a command-line tool for scripts:</p>
+    <pre><code>sweep remove /Applications/Foo.app   # to the Trash, asks first
+sweep undo                           # put it back
+sweep malware --quick                # quick malware scan
+sweep persistence                    # launch items with red flags</code></pre>
+  </div>
+</section>
+
+<section id="donate">
+  <div class="wrap">
+    <h2>Support Sweep</h2>
+    <p class="sub">Sweep is free. A donation helps pay for an Apple Developer account, so Sweep can be notarized and open
+      without any warning.</p>
+    <div class="wallets" id="wallets"></div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>Sweep · MIT license · Not affiliated with Apple.</span>
+    <span><a href="https://github.com/jordyorel/sweep">Source</a> · <a href="https://github.com/jordyorel/sweep/issues">Report a problem</a></span>
+  </div>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+  // Donation addresses. Fill in exactly as given by the wallet; each one gets a QR code and a Copy button.
+  const WALLETS = [
+    // { coin: "Bitcoin", network: "Bitcoin network", address: "bc1..." },
+  ];
+
+  const box = document.getElementById("wallets");
+  if (WALLETS.length === 0) {
+    box.innerHTML = '<p class="empty">Donation addresses are coming soon.</p>';
+  }
+  for (const w of WALLETS) {
+    const el = document.createElement("div");
+    el.className = "card wallet";
+    el.innerHTML = `<div class="coin"></div><div class="net"></div><div class="qr"></div>
+      <div class="addr"></div><button class="btn copy" type="button">Copy address</button>`;
+    el.querySelector(".coin").textContent = w.coin;
+    el.querySelector(".net").textContent = w.network;
+    el.querySelector(".addr").textContent = w.address;
+    if (window.QRCode) {
+      new QRCode(el.querySelector(".qr"), { text: w.address, width: 148, height: 148, correctLevel: QRCode.CorrectLevel.M });
+    } else {
+      el.querySelector(".qr").remove();
+    }
+    const btn = el.querySelector(".copy");
+    btn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(w.address);
+        btn.textContent = "Copied ✓";
+      } catch {
+        btn.textContent = "Select and copy the address above";
+      }
+      setTimeout(() => (btn.textContent = "Copy address"), 2000);
+    });
+    box.appendChild(el);
+  }
+</script>
+</body>
+</html>
