@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <!-- YARA-X compiles rules to native code at run time (wasmtime), mapping memory writable then executable
+       with mprotect (not MAP_JIT). Without this, the hardened runtime SIGKILLs the process
+       (OS_REASON_CODESIGNING) as soon as a malware scan starts. allow-jit alone is not enough. -->
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+</dict></plist>

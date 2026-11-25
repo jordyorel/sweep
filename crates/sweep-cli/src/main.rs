@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::io::{BufRead, IsTerminal, Write};
 use sweep_core::removal::{self, Outcome};
 use sweep_core::{Env, Options};
-use sweep_malware::{check, persistence, xprotect};
+use sweep_malware::{check, persistence, watch, xprotect};
 
 #[derive(Parser)]
 #[command(name = "sweep", version, about = "Uninstall apps (to the Trash, with undo) and check for malware on macOS")]
@@ -72,6 +72,18 @@ enum Cmd {
         /// Skip signature scanning of each job's program.
         #[arg(long)]
         no_yara: bool,
+    },
+    /// Background watch for new suspicious launch agents/daemons. Without options: one pass (what the agent runs).
+    Watch {
+        /// Install the user LaunchAgent that runs the watch when a launch folder changes and every 6 hours.
+        #[arg(long, conflicts_with_all = ["uninstall", "status"])]
+        install: bool,
+        /// Stop and remove that LaunchAgent (its plist goes to the Trash).
+        #[arg(long, conflicts_with = "status")]
+        uninstall: bool,
+        /// Show whether the watch is installed, and past alerts.
+        #[arg(long)]
+        status: bool,
     },
     /// Security check of one app: signature, notarization, quarantine, malware signatures.
     Check { app: PathBuf },
@@ -217,6 +229,57 @@ fn main() -> Result<()> {
             let flagged = jobs.iter().filter(|j| j.risk > persistence::Risk::Info).count();
             println!("\n{total} launch jobs, {flagged} with red flags");
         }
+        Cmd::Watch { install, uninstall, status } => {
+            let store = watch::Store::new(&env.state_dir);
+            if install {
+                let plist = watch_install(&env)?;
+                println!("watch installed: {}", tilde(&plist));
+                println!("it runs now, whenever a LaunchAgents/LaunchDaemons folder changes, and every 6 hours");
+            } else if uninstall {
+                println!("{}", if watch_uninstall()? { "watch removed (its plist is in the Trash)" } else { "watch was not installed" });
+            } else if status {
+                let alerts = store.alerts();
+                let installed = watch_plist().exists();
+                if cli.json {
+                    return print_json(&serde_json::json!({ "installed": installed, "baseline": store.baseline().is_some(), "alerts": alerts }));
+                }
+                println!("watch: {}", if installed { "installed" } else { "not installed (sweep watch --install)" });
+                if alerts.is_empty() {
+                    println!("no alerts");
+                }
+                for a in alerts.iter().rev() {
+                    println!("[{}] {:?} {}  ({})", a.risk, a.change, tilde(&a.plist), ago(a.time_unix));
+                    for f in &a.flags {
+                        println!("    - {f}");
+                    }
+                }
+            } else {
+                let rules = xprotect::Rules::load_system()?;
+                let mut jobs = persistence::audit(&home(), Some(&rules));
+                // Our own agent is not news. Matched on both plist and program, so a look-alike is still reported.
+                let me = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok());
+                jobs.retain(|j| !(j.plist == watch_plist() && j.program.as_ref().and_then(|p| p.canonicalize().ok()) == me));
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
+                let first = store.baseline().is_none();
+                let alerts = store.run(&jobs, now)?;
+                for a in &alerts {
+                    let what = a.label.clone().unwrap_or_else(|| tilde(&a.plist));
+                    let verb = if a.change == watch::Change::New { "New" } else { "Changed" };
+                    notify(&format!("{verb} suspicious launch item: {what}"), a.flags.first().map(String::as_str).unwrap_or(""));
+                }
+                if cli.json {
+                    return print_json(&alerts);
+                }
+                if first {
+                    println!("baseline recorded ({} launch jobs); future changes will be reported", jobs.len());
+                } else {
+                    println!("{} launch jobs, {} new alerts", jobs.len(), alerts.len());
+                }
+                for a in &alerts {
+                    println!("!! [{}] {:?} {}", a.risk, a.change, tilde(&a.plist));
+                }
+            }
+        }
         Cmd::Check { app } => {
             let rules = xprotect::Rules::load_system()?;
             let c = check::app(&app, &rules, &|| false);
@@ -240,6 +303,70 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+const WATCH_LABEL: &str = "dev.sweep.watch";
+
+fn watch_plist() -> PathBuf {
+    home().join("Library/LaunchAgents").join(format!("{WATCH_LABEL}.plist"))
+}
+
+fn gui_domain() -> String {
+    format!("gui/{}", unsafe { libc::getuid() })
+}
+
+/// Write the LaunchAgent pointing at this very binary, and (re)load it.
+fn watch_install(env: &Env) -> Result<PathBuf> {
+    use plist::{Dictionary, Value};
+    let exe = std::env::current_exe()?.canonicalize()?;
+    let h = home();
+    let log = env.state_dir.join("watch/agent.log");
+    std::fs::create_dir_all(log.parent().unwrap())?;
+    let s = |p: &Path| Value::String(p.to_string_lossy().into_owned());
+    let mut d = Dictionary::new();
+    d.insert("Label".into(), WATCH_LABEL.into());
+    d.insert("ProgramArguments".into(), Value::Array(vec![s(&exe), "watch".into()]));
+    d.insert(
+        "WatchPaths".into(),
+        Value::Array(vec![s(&h.join("Library/LaunchAgents")), "/Library/LaunchAgents".into(), "/Library/LaunchDaemons".into()]),
+    );
+    d.insert("StartInterval".into(), Value::Integer((6 * 3600).into()));
+    d.insert("RunAtLoad".into(), true.into());
+    d.insert("ProcessType".into(), "Background".into());
+    d.insert("LowPriorityIO".into(), true.into());
+    d.insert("Nice".into(), Value::Integer(10.into()));
+    d.insert("StandardOutPath".into(), s(&log));
+    d.insert("StandardErrorPath".into(), s(&log));
+    let plist = watch_plist();
+    std::fs::create_dir_all(plist.parent().unwrap())?;
+    Value::Dictionary(d).to_file_xml(&plist)?;
+    let domain = gui_domain();
+    let _ = launchctl(&["bootout", &format!("{domain}/{WATCH_LABEL}")]);
+    anyhow::ensure!(launchctl(&["bootstrap", &domain, &plist.to_string_lossy()])?, "launchctl bootstrap failed");
+    Ok(plist)
+}
+
+fn watch_uninstall() -> Result<bool> {
+    let plist = watch_plist();
+    let _ = launchctl(&["bootout", &format!("{}/{WATCH_LABEL}", gui_domain())]);
+    if !plist.exists() {
+        return Ok(false);
+    }
+    use sweep_core::removal::Platform;
+    removal::System.trash(&plist)?;
+    Ok(true)
+}
+
+fn launchctl(args: &[&str]) -> Result<bool> {
+    let st = std::process::Command::new("/bin/launchctl").args(args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status()?;
+    Ok(st.success())
+}
+
+/// Notification Center banner. Text goes through argv, never into the script source.
+fn notify(title: &str, body: &str) {
+    let _ = std::process::Command::new("/usr/bin/osascript")
+        .args(["-e", "on run argv", "-e", "display notification (item 2 of argv) with title \"Sweep\" subtitle (item 1 of argv)", "-e", "end run", title, body])
+        .status();
 }
 
 fn print_outcome(out: &Outcome) {

@@ -7,11 +7,13 @@ struct SweepApp: App {
     // The app struct is created once; a plain constant avoids the @State macro, which the
     // Command Line Tools cannot expand (no SwiftUIMacros plugin without Xcode).
     private let model = AppModel()
+    private let watch = WatchModel()
 
     var body: some Scene {
         WindowGroup("Sweep") {
             ContentView()
                 .environment(model)
+                .environment(watch)
                 .frame(minWidth: 820, minHeight: 520)
         }
         .commands {
@@ -60,6 +62,7 @@ struct ContentView: View {
         .onChange(of: model.selectedApp) { _, path in
             if let path { Task { await model.scan(path) } }
         }
+        .toolbar { ToolbarItem(placement: .primaryAction) { WatchButton() } }
         .task { await model.loadApps() }
         .alert(
             "App is running",

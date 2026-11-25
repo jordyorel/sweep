@@ -14,5 +14,7 @@ anyhow.workspace = true
 serde.workspace = true
 clap.workspace = true
 serde_json.workspace = true
+plist.workspace = true
+libc.workspace = true
 sweep-core = { path = "../sweep-core" }
 sweep-malware = { path = "../sweep-malware" }
