@@ -1,14 +1,16 @@
 //! `sweep`: uninstall-leftover finder and on-demand malware checks for macOS.
-//! Everything here is read-only: nothing is moved or deleted yet.
+//! Only `remove` changes anything, and it only moves items to the Trash (`undo` puts them back).
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
+use std::io::{BufRead, IsTerminal, Write};
+use sweep_core::removal::{self, Outcome};
 use sweep_core::{Env, Options};
 use sweep_malware::{persistence, signing, xprotect};
 
 #[derive(Parser)]
-#[command(name = "sweep", version, about = "Find app leftovers and check for malware on macOS (read-only)")]
+#[command(name = "sweep", version, about = "Uninstall apps (to the Trash, with undo) and check for malware on macOS")]
 struct Cli {
     /// Print JSON instead of text.
     #[arg(long, global = true)]
@@ -27,6 +29,32 @@ enum Cmd {
         /// Skip reading App Group entitlements (faster).
         #[arg(long)]
         no_entitlements: bool,
+    },
+    /// Move an app and its selected leftovers to the Trash (undo with `sweep undo`).
+    Remove {
+        app: PathBuf,
+        /// Also remove this unselected item (e.g. the parent folder). Repeatable.
+        #[arg(long = "include", value_name = "PATH")]
+        include: Vec<PathBuf>,
+        /// Keep this item. Repeatable.
+        #[arg(long = "exclude", value_name = "PATH")]
+        exclude: Vec<PathBuf>,
+        /// Do not ask for confirmation.
+        #[arg(long, short)]
+        yes: bool,
+        /// Remove even if the app is running.
+        #[arg(long)]
+        allow_running: bool,
+        /// Skip reading App Group entitlements (faster).
+        #[arg(long)]
+        no_entitlements: bool,
+    },
+    /// Put back what the last `remove` (or the given one) moved to the Trash.
+    Undo {
+        id: Option<String>,
+        /// List what can be undone instead.
+        #[arg(long)]
+        list: bool,
     },
     /// Scan files or folders with Apple's XProtect malware signatures.
     Malware {
@@ -86,6 +114,71 @@ fn main() -> Result<()> {
             }
             let sel: u64 = report.findings.iter().filter(|f| f.selected).map(|f| f.size).sum();
             println!("\n{} items, {} selected ({})", report.findings.len(), report.findings.iter().filter(|f| f.selected).count(), human(sel));
+        }
+        Cmd::Remove { app, include, exclude, yes, allow_running, no_entitlements } => {
+            let opts = Options { read_entitlements: !no_entitlements, sizes: true };
+            let report = sweep_core::scan(&app, &env, &opts)?;
+            let abs = |v: Vec<PathBuf>| v.into_iter().map(|p| std::path::absolute(&p).unwrap_or(p)).collect::<Vec<_>>();
+            let plan = removal::plan(&report, &abs(include), &abs(exclude))?;
+            if !yes && (cli.json || !std::io::stdin().is_terminal()) {
+                anyhow::bail!("not a terminal: pass --yes to confirm");
+            }
+            if !cli.json {
+                let v = &report.bundle.version;
+                let v = if v.is_empty() { String::new() } else { format!(" {v}") };
+                println!("{}{v}: {} items to move to the Trash ({})", plan.app_name, plan.items.len(), human(plan.total_size()));
+                for i in &plan.items {
+                    println!("  {:>9}  {:<20} {}", human(i.size), format!("{:?}", i.category), tilde(&i.path));
+                }
+                let skipped: Vec<_> = report.findings.iter().filter(|f| !plan.items.iter().any(|i| f.path.starts_with(&i.path))).collect();
+                for f in &skipped {
+                    println!("  {:>9}  {:<20} {}  (kept)", human(f.size), format!("{:?}", f.category), tilde(&f.path));
+                }
+            }
+            if !removal::has_full_disk_access() && !cli.json {
+                eprintln!("note: this terminal has no Full Disk Access; some items may be refused by macOS");
+            }
+            if !yes && !confirm("Move to the Trash?")? {
+                println!("cancelled, nothing moved");
+                return Ok(());
+            }
+            let out = removal::execute(&plan, &env, &removal::System, allow_running)?;
+            if cli.json {
+                return print_json(&out);
+            }
+            print_outcome(&out);
+        }
+        Cmd::Undo { id, list } => {
+            if list {
+                let js = removal::journals(&env);
+                if cli.json {
+                    return print_json(&js);
+                }
+                if js.is_empty() {
+                    println!("nothing to undo");
+                }
+                for j in &js {
+                    println!("{}  {:<30} {} items  ({})", j.id, j.app_name, j.items.len(), ago(j.created_unix));
+                }
+                return Ok(());
+            }
+            let u = removal::undo(&env, id.as_deref())?;
+            if cli.json {
+                return print_json(&u);
+            }
+            println!("restored {} items", u.restored.len());
+            for p in &u.conflicts {
+                println!("  kept in the Trash, something already exists at {}", tilde(p));
+            }
+            for p in &u.gone {
+                println!("  no longer in the Trash: {}", tilde(p));
+            }
+            for f in &u.failed {
+                println!("  failed: {}: {}", tilde(&f.path), f.reason);
+            }
+            if !u.conflicts.is_empty() || !u.failed.is_empty() {
+                println!("run `sweep undo {}` again once fixed", u.journal);
+            }
         }
         Cmd::Malware { paths, max_size_mb } => {
             let (version, sum) = xprotect::scan_paths(&paths, max_size_mb * 1024 * 1024)?;
@@ -148,6 +241,40 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn print_outcome(out: &Outcome) {
+    println!("moved {} items to the Trash", out.moved.len());
+    if !out.missing.is_empty() {
+        println!("  {} already gone", out.missing.len());
+    }
+    for p in &out.needs_privileges {
+        println!("  needs admin rights (not supported yet), left in place: {}", tilde(&p.path));
+    }
+    for p in &out.failed {
+        println!("  failed: {}: {}", tilde(&p.path), p.reason);
+    }
+    if let Some(id) = &out.journal {
+        println!("undo with: sweep undo   (id {id})");
+    }
+}
+
+fn confirm(question: &str) -> Result<bool> {
+    print!("{question} [y/N] ");
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line)?;
+    Ok(matches!(line.trim().to_lowercase().as_str(), "y" | "yes" | "o" | "oui"))
+}
+
+fn ago(unix: u64) -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(unix);
+    match now.saturating_sub(unix) {
+        s if s < 120 => format!("{s} s ago"),
+        s if s < 7200 => format!("{} min ago", s / 60),
+        s if s < 172_800 => format!("{} h ago", s / 3600),
+        s => format!("{} days ago", s / 86_400),
+    }
 }
 
 fn print_json<T: serde::Serialize>(v: &T) -> Result<()> {

@@ -30,6 +30,8 @@ pub struct Env {
     pub receipts: PathBuf,
     /// `~/Applications`, `/Applications`
     pub app_dirs: Vec<PathBuf>,
+    /// Where sweep keeps its own state (undo journals): `~/Library/Application Support/sweep`.
+    pub state_dir: PathBuf,
 }
 
 impl Env {
@@ -41,6 +43,7 @@ impl Env {
             users_shared: "/Users/Shared".into(),
             receipts: "/private/var/db/receipts".into(),
             app_dirs: vec![home.join("Applications"), "/Applications".into()],
+            state_dir: home.join("Library/Application Support/sweep"),
         }
     }
 
@@ -52,6 +55,7 @@ impl Env {
             users_shared: root.join("Users/Shared"),
             receipts: root.join("private/var/db/receipts"),
             app_dirs: vec![root.join("Users/me/Applications"), root.join("Applications")],
+            state_dir: root.join("state"),
         }
     }
 

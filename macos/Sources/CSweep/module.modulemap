@@ -1,0 +1,5 @@
+module CSweep {
+    header "../../../crates/sweep-ffi/include/sweep.h"
+    link "sweep_ffi"
+    export *
+}

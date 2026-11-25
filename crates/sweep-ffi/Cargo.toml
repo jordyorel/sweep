@@ -1,0 +1,15 @@
+[package]
+name = "sweep-ffi"
+description = "C ABI over sweep-core for the SwiftUI app (JSON in, JSON out)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sweep-core = { path = "../sweep-core" }

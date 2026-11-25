@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/sweep-core", "crates/sweep-malware", "crates/sweep-cli"]
+members = ["crates/sweep-core", "crates/sweep-malware", "crates/sweep-cli", "crates/sweep-ffi"]
 
 [workspace.package]
 version = "0.1.0"
@@ -18,3 +18,4 @@ unicode-normalization = "0.1"
 yara-x = "1.24"
 clap = { version = "4", features = ["derive"] }
 tempfile = "3"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSFileManager", "NSURL", "NSError", "NSString"] }

@@ -3,6 +3,7 @@
 pub mod bundle;
 pub mod env;
 pub mod leftovers;
+pub mod removal;
 pub mod text;
 
 pub use bundle::{Bundle, BundleKind};
