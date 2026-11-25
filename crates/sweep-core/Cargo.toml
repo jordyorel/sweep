@@ -1,0 +1,17 @@
+[package]
+name = "sweep-core"
+description = "Find files an app leaves behind on macOS"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+plist.workspace = true
+regex.workspace = true
+serde.workspace = true
+libc.workspace = true
+unicode-normalization.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
