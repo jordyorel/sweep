@@ -129,6 +129,14 @@ final class AppModel {
 }
 
 enum Format {
+    /// "6 min ago", "2 hr ago": coarser than SwiftUI's `.relative` style ("6 min, 32 sec").
+    static func ago(_ d: Date, now: Date = Date()) -> String {
+        if now.timeIntervalSince(d) < 60 { return "just now" }
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .short
+        return f.localizedString(for: d, relativeTo: now)
+    }
+
     static func size(_ n: UInt64) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(n), countStyle: .file)
     }

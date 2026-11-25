@@ -137,7 +137,7 @@ struct WatchSidebarRow: View {
                         Text("+ on every change").foregroundStyle(.secondary)
                     }
                     if let last = watch.lastRun {
-                        (Text("Last check ") + Text(last, style: .relative) + Text(" ago")).foregroundStyle(.secondary)
+                        AgoText(prefix: "Last check ", date: last).foregroundStyle(.secondary)
                     } else {
                         Text("Not run yet").foregroundStyle(.secondary)
                     }
