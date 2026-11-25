@@ -108,13 +108,30 @@
   pre code { background: none; border: 0; padding: 0; }
 
   /* Donate */
-  .wallets { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
-  .wallet { display: flex; flex-direction: column; gap: 12px; align-items: center; text-align: center; }
-  .wallet .qr { background: #fff; padding: 10px; border-radius: 12px; line-height: 0; }
-  .wallet .coin { font-weight: 700; font-size: 18px; }
-  .wallet .net { color: var(--muted); font-size: 13px; }
-  .wallet .addr { word-break: break-all; font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
-  .copy { cursor: pointer; font: inherit; font-size: 14px; }
+  .wallets { display: grid; gap: 20px; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); }
+  .wallet { --coin: var(--accent); position: relative; overflow: hidden; display: flex; flex-direction: column;
+            gap: 16px; align-items: center; text-align: center; padding: 26px 22px 22px;
+            transition: transform 0.2s ease, border-color 0.2s ease; }
+  .wallet::before { content: ""; position: absolute; inset: 0 0 auto; height: 4px; background: var(--coin); }
+  .wallet::after { content: ""; position: absolute; inset: -60% -20% auto; height: 70%; z-index: -1;
+                   background: radial-gradient(closest-side, color-mix(in srgb, var(--coin) 22%, transparent), transparent); }
+  .wallet:hover { transform: translateY(-3px); border-color: color-mix(in srgb, var(--coin) 45%, transparent); }
+  .wallet .head { display: flex; align-items: center; gap: 12px; align-self: stretch; text-align: left; }
+  .wallet .badge { flex: 0 0 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; color: #fff;
+                   font-weight: 800; font-size: 12px; letter-spacing: 0.02em; background: var(--coin);
+                   box-shadow: 0 6px 16px color-mix(in srgb, var(--coin) 40%, transparent); }
+  .wallet .coin { font-weight: 700; font-size: 18px; line-height: 1.2; }
+  .wallet .net { color: var(--muted); font-size: 13px; line-height: 1.35; min-height: 2.7em; } /* 2 lines: QR codes align */
+  .wallet .qr { background: #fff; padding: 12px; border-radius: 20px; line-height: 0;
+                box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(0, 0, 0, 0.04); }
+  .wallet .qr img { width: 200px; height: 200px; display: block; }
+  .wallet .addr { align-self: stretch; word-break: break-all; font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+                  color: var(--text); background: var(--bg-2); border: 1px solid var(--card-border); border-radius: 10px;
+                  padding: 10px 12px; user-select: all; }
+  .copy { cursor: pointer; font: inherit; font-size: 14px; align-self: stretch; justify-content: center;
+          background: color-mix(in srgb, var(--coin) 16%, transparent);
+          border-color: color-mix(in srgb, var(--coin) 40%, transparent); }
+  .copy.done { background: rgba(52, 199, 89, 0.18); border-color: rgba(52, 199, 89, 0.5); }
   .empty { text-align: center; color: var(--muted); }
 
   footer { border-top: 1px solid var(--card-border); padding: 28px 0 40px; color: var(--muted); font-size: 14px; }
@@ -230,7 +247,33 @@ sweep persistence                    # launch items with red flags</code></pre>
     <h2>Support Sweep</h2>
     <p class="sub">Sweep is free. A donation helps pay for an Apple Developer account, so Sweep can be notarized and open
       without any warning.</p>
-    <div class="wallets" id="wallets"></div>
+    <!-- Addresses exactly as copied from the wallets. QR images: `swift site/make-qr.swift <address> <png> <color> <label>`,
+         then check they decode to the same address. -->
+    <div class="wallets">
+      <div class="card wallet" style="--coin:#E6007A">
+        <div class="head"><div class="badge">DOT</div><div><div class="coin">Polkadot</div>
+          <div class="net">DOT · also USDT/USDC on Polkadot Asset Hub</div></div></div>
+        <div class="qr"><img src="assets/qr-polkadot.png" width="200" height="200" alt="QR code of the Polkadot address"></div>
+        <div class="addr">1hAyTy55vfbAZQReiPUEPURtAc5mN78TKqZF7S2kEP677tM</div>
+        <button class="btn copy" type="button" data-address="1hAyTy55vfbAZQReiPUEPURtAc5mN78TKqZF7S2kEP677tM">Copy address</button>
+      </div>
+      <div class="card wallet" style="--coin:#627EEA">
+        <div class="head"><div class="badge">ETH</div><div><div class="coin">Ethereum</div>
+          <div class="net">ETH · USDT/USDC (ERC-20) on Ethereum mainnet</div></div></div>
+        <div class="qr"><img src="assets/qr-ethereum.png" width="200" height="200" alt="QR code of the Ethereum address"></div>
+        <div class="addr">0x78c3367E6513F00Be73cF645A82Ea68d2169041a</div>
+        <button class="btn copy" type="button" data-address="0x78c3367E6513F00Be73cF645A82Ea68d2169041a">Copy address</button>
+      </div>
+      <div class="card wallet" style="--coin:#9945FF">
+        <div class="head"><div class="badge">SOL</div><div><div class="coin">Solana</div>
+          <div class="net">SOL · USDC/USDT on Solana</div></div></div>
+        <div class="qr"><img src="assets/qr-solana.png" width="200" height="200" alt="QR code of the Solana address"></div>
+        <div class="addr">Saywh4n18s6UKbxSUyFPCqTwEbpZzcFJHxpJPCFNDVY</div>
+        <button class="btn copy" type="button" data-address="Saywh4n18s6UKbxSUyFPCqTwEbpZzcFJHxpJPCFNDVY">Copy address</button>
+      </div>
+    </div>
+    <p class="small" style="text-align:center">Send only the coins and networks listed under each address: funds sent on another
+      network may be lost. Thank you!</p>
   </div>
 </section>
 
@@ -241,41 +284,19 @@ sweep persistence                    # launch items with red flags</code></pre>
   </div>
 </footer>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script>
-  // Donation addresses. Fill in exactly as given by the wallet; each one gets a QR code and a Copy button.
-  const WALLETS = [
-    // { coin: "Bitcoin", network: "Bitcoin network", address: "bc1..." },
-  ];
-
-  const box = document.getElementById("wallets");
-  if (WALLETS.length === 0) {
-    box.innerHTML = '<p class="empty">Donation addresses are coming soon.</p>';
-  }
-  for (const w of WALLETS) {
-    const el = document.createElement("div");
-    el.className = "card wallet";
-    el.innerHTML = `<div class="coin"></div><div class="net"></div><div class="qr"></div>
-      <div class="addr"></div><button class="btn copy" type="button">Copy address</button>`;
-    el.querySelector(".coin").textContent = w.coin;
-    el.querySelector(".net").textContent = w.network;
-    el.querySelector(".addr").textContent = w.address;
-    if (window.QRCode) {
-      new QRCode(el.querySelector(".qr"), { text: w.address, width: 148, height: 148, correctLevel: QRCode.CorrectLevel.M });
-    } else {
-      el.querySelector(".qr").remove();
-    }
-    const btn = el.querySelector(".copy");
+  // Copy buttons of the donation cards (the cards themselves are plain HTML above).
+  for (const btn of document.querySelectorAll(".copy[data-address]")) {
     btn.addEventListener("click", async () => {
       try {
-        await navigator.clipboard.writeText(w.address);
+        await navigator.clipboard.writeText(btn.dataset.address);
         btn.textContent = "Copied ✓";
+        btn.classList.add("done");
       } catch {
-        btn.textContent = "Select and copy the address above";
+        btn.textContent = "Select the address above and copy it";
       }
-      setTimeout(() => (btn.textContent = "Copy address"), 2000);
+      setTimeout(() => { btn.textContent = "Copy address"; btn.classList.remove("done"); }, 2000);
     });
-    box.appendChild(el);
   }
 </script>
 </body>
