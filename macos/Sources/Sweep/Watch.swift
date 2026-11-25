@@ -25,7 +25,6 @@ final class WatchModel {
     var alerts: [WatchAlert] = []
     var busy = false
     var error: String?
-
     /// Alerts from the last 7 days, newest first.
     var recent: [WatchAlert] {
         let cutoff = UInt64(Date().timeIntervalSince1970) - 7 * 86_400
@@ -88,54 +87,61 @@ final class WatchModel {
     }
 }
 
-struct WatchButton: View {
+/// Always visible at the bottom of the sidebar. Lives in the main window on purpose: content in popovers and
+/// inspectors stopped updating in this app (the toolbar popover looked like the button vanished).
+struct WatchSidebarRow: View {
     @Environment(WatchModel.self) private var watch
-    private let showing = State(initialValue: false) // no @State macro with the Command Line Tools
 
     var body: some View {
-        Button { showing.wrappedValue = true } label: {
-            Label("Watch", systemImage: watch.recent.isEmpty ? "shield.lefthalf.filled" : "exclamationmark.shield.fill")
-                .foregroundStyle(watch.recent.isEmpty ? (watch.installed ? Color.green : .secondary) : .red)
+        VStack(alignment: .leading, spacing: 4) {
+            Divider()
+            HStack {
+                Image(systemName: watch.recent.isEmpty ? "shield.lefthalf.filled" : "exclamationmark.shield.fill")
+                    .foregroundStyle(watch.recent.isEmpty ? (watch.installed ? Color.green : .secondary) : .red)
+                Text("Background watch")
+                Spacer()
+                if watch.busy { ProgressView().controlSize(.small) }
+                Toggle("Background watch", isOn: Binding(get: { watch.installed }, set: { on in Task { await watch.set(on) } }))
+                    .labelsHidden().toggleStyle(.switch).controlSize(.mini)
+                    .disabled(watch.busy)
+            }
+            .padding(.horizontal, 12)
+            Text(subtitle).font(.caption).foregroundStyle(watch.recent.isEmpty ? Color.secondary : .red)
+                .padding(.horizontal, 12)
+            if let e = watch.error {
+                Text(e).font(.caption).foregroundStyle(.red).padding(.horizontal, 12)
+            }
         }
-        .help(watch.installed ? "Background watch is on" : "Background watch is off")
-        .popover(isPresented: showing.projectedValue, arrowEdge: .bottom) { WatchPanel() }
+        .padding(.bottom, 8)
+        .help("Checks launch agents and daemons whenever they change and every 6 hours, and notifies you when a suspicious one appears.")
         .task { await watch.refresh() }
+    }
+
+    private var subtitle: String {
+        if !watch.recent.isEmpty { return "\(watch.recent.count) alert\(watch.recent.count == 1 ? "" : "s") this week: see the home screen" }
+        return watch.installed ? "On · no alerts this week" : "Off"
     }
 }
 
-struct WatchPanel: View {
+/// Recent alerts, on the home screen (shown when no app is selected).
+struct WatchAlertsList: View {
     @Environment(WatchModel.self) private var watch
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Toggle(isOn: Binding(get: { watch.installed }, set: { on in Task { await watch.set(on) } })) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Background watch").font(.headline)
-                    Text("Checks launch agents and daemons whenever they change and every 6 hours, and notifies you when a suspicious one appears.")
-                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .toggleStyle(.switch)
-            .disabled(watch.busy)
-            if let e = watch.error {
-                Text(e).font(.caption).foregroundStyle(.red)
-            }
-            Divider()
-            if watch.recent.isEmpty {
-                Label("No alerts in the last 7 days", systemImage: "checkmark.shield").foregroundStyle(.secondary)
-            } else {
-                Text("Alerts (last 7 days)").font(.subheadline.weight(.semibold))
+        if !watch.recent.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Label("Suspicious launch items (last 7 days)", systemImage: "exclamationmark.shield.fill")
+                    .font(.headline).foregroundStyle(.red)
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 12) {
                         ForEach(watch.recent) { a in AlertRow(alert: a) }
                     }
                 }
-                .frame(maxHeight: 260)
+                .frame(maxHeight: 240)
             }
+            .padding(16)
+            .background(Color.red.opacity(0.06))
         }
-        .padding(14)
-        .frame(width: 400)
-        .task { await watch.refresh() }
     }
 }
 

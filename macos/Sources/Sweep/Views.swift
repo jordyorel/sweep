@@ -14,7 +14,7 @@ struct SweepApp: App {
             ContentView()
                 .environment(model)
                 .environment(watch)
-                .frame(minWidth: 820, minHeight: 520)
+                .frame(minWidth: 1000, minHeight: 560)
         }
         .commands {
             CommandGroup(replacing: .undoRedo) {
@@ -27,6 +27,7 @@ struct SweepApp: App {
 
 struct ContentView: View {
     @Environment(AppModel.self) private var model
+    @Environment(WatchModel.self) private var watch
     private let dropTargeted = State(initialValue: false) // see SweepApp: no @State macro
 
     var body: some View {
@@ -35,6 +36,7 @@ struct ContentView: View {
                 AppRow(path: app.path, name: app.name, subtitle: app.version)
             }
             .searchable(text: Binding(get: { model.search }, set: { model.search = $0 }), placement: .sidebar, prompt: "Search apps")
+            .safeAreaInset(edge: .bottom, spacing: 0) { WatchSidebarRow() }
             .navigationSplitViewColumnWidth(min: 220, ideal: 260)
         } detail: {
             VStack(spacing: 0) {
@@ -44,7 +46,10 @@ struct ContentView: View {
                 } else if model.busy {
                     ProgressView("Looking for leftovers…").frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    DropHint(targeted: dropTargeted.wrappedValue)
+                    VStack(spacing: 0) {
+                        DropHint(targeted: dropTargeted.wrappedValue)
+                        WatchAlertsList()
+                    }
                 }
             }
         }
@@ -62,8 +67,13 @@ struct ContentView: View {
         .onChange(of: model.selectedApp) { _, path in
             if let path { Task { await model.scan(path) } }
         }
-        .toolbar { ToolbarItem(placement: .primaryAction) { WatchButton() } }
-        .task { await model.loadApps() }
+        .task {
+            await model.loadApps()
+            // Dev hook: `Sweep --scan /path/App.app` opens straight on that app (used to check the UI by screenshot).
+            let args = ProcessInfo.processInfo.arguments
+            if let i = args.firstIndex(of: "--scan"), i + 1 < args.count { await model.scan(args[i + 1]) }
+        }
+        .task { await watch.refresh() }
         .alert(
             "App is running",
             isPresented: Binding(get: { model.runningConflict != nil }, set: { if !$0 { model.runningConflict = nil } })
@@ -181,6 +191,10 @@ struct LeftoversView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            if model.showCheckDetails, let c = model.check {
+                Divider()
+                SecurityDetails(check: c)
+            }
             if model.check?.verdict.level == "danger" {
                 Banner(icon: "xmark.shield.fill", tint: .red,
                        text: "This app looks malicious: \(model.check!.verdict.headline). Moving it and all its leftovers to the Trash is recommended.") { EmptyView() }
@@ -276,9 +290,10 @@ struct FindingRow: View {
     }
 }
 
+/// Opens the details inline under the header. Deliberately no popover: content in popovers and inspectors
+/// stopped updating (and went blank) in this app, while the main window updates fine.
 struct SecurityBadge: View {
     @Environment(AppModel.self) private var model
-    private let showing = State(initialValue: false) // no @State macro with the Command Line Tools
 
     var body: some View {
         Group {
@@ -288,14 +303,17 @@ struct SecurityBadge: View {
                     Text("Checking security…").foregroundStyle(.secondary)
                 }
             } else if let c = model.check {
-                Button { showing.wrappedValue = true } label: {
-                    Label(c.verdict.headline, systemImage: Self.icon(c.verdict.level))
-                        .lineLimit(1)
-                        .foregroundStyle(Self.tint(c.verdict.level))
+                Button { model.showCheckDetails.toggle() } label: {
+                    HStack(spacing: 4) {
+                        Label(c.verdict.headline, systemImage: Self.icon(c.verdict.level))
+                            .lineLimit(1)
+                            .foregroundStyle(Self.tint(c.verdict.level))
+                        Image(systemName: model.showCheckDetails ? "chevron.up" : "chevron.down")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
                 }
                 .buttonStyle(.borderless)
-                .frame(maxWidth: 320)
-                .popover(isPresented: showing.projectedValue, arrowEdge: .bottom) { SecurityDetails(check: c) }
+                .frame(maxWidth: 340)
             } else if let e = model.checkError {
                 Label("Check failed", systemImage: "questionmark.diamond").foregroundStyle(.secondary).help(e)
             }
@@ -331,7 +349,7 @@ struct SecurityDetails: View {
             if !check.verdict.reasons.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(check.verdict.reasons, id: \.self) { r in
-                        Text("• " + r).fixedSize(horizontal: false, vertical: true)
+                        Text("• " + r)
                     }
                 }
             }
@@ -339,10 +357,11 @@ struct SecurityDetails: View {
             Text("XProtect \(check.xprotectVersion): \(check.scan.filesScanned) files scanned, \(check.scan.detections.count) detections")
                 .font(.caption).foregroundStyle(.secondary)
             Text("Signature, Gatekeeper and quarantine are checked with Apple's own tools. This is an on-demand check, not real-time protection.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .font(.caption).foregroundStyle(.secondary)
         }
-        .padding(14)
-        .frame(width: 380)
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.5))
         .textSelection(.enabled)
     }
 }

@@ -15,6 +15,7 @@ final class AppModel {
     var check: AppCheck?
     var checkError: String?
     var checking = false
+    var showCheckDetails = false
     private var checkPath: String?
 
     var busy = false
@@ -58,6 +59,7 @@ final class AppModel {
     private func startCheck(_ path: String) {
         check = nil
         checkError = nil
+        showCheckDetails = false
         checking = true
         checkPath = path
         let token = Core.beginCheck() // makes the previous app's check stop
