@@ -360,9 +360,24 @@ fn watch_install(env: &Env, every_hours: u64) -> Result<PathBuf> {
     std::fs::create_dir_all(plist.parent().unwrap())?;
     Value::Dictionary(d).to_file_xml(&plist)?;
     let domain = gui_domain();
-    let _ = launchctl(&["bootout", &format!("{domain}/{WATCH_LABEL}")]);
-    anyhow::ensure!(launchctl(&["bootstrap", &domain, &plist.to_string_lossy()])?, "launchctl bootstrap failed");
-    Ok(plist)
+    let service = format!("{domain}/{WATCH_LABEL}");
+    // bootout is asynchronous: bootstrapping right after it fails (error 5) and leaves the agent unloaded.
+    // Wait until the old job is gone, then retry bootstrap a few times.
+    if launchctl(&["bootout", &service])? {
+        for _ in 0..50 {
+            if !launchctl(&["print", &service])? {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+    for attempt in 0..5 {
+        if launchctl(&["bootstrap", &domain, &plist.to_string_lossy()])? {
+            return Ok(plist);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300 * (attempt + 1)));
+    }
+    anyhow::bail!("launchctl bootstrap failed: the watch is not running (try again)")
 }
 
 fn watch_uninstall() -> Result<bool> {
