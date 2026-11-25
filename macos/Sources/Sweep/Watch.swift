@@ -16,12 +16,17 @@ struct WatchAlert: Codable, Sendable, Identifiable {
 
 private struct WatchStatus: Codable, Sendable {
     let installed: Bool
+    let intervalHours: UInt64?
+    let lastRunUnix: UInt64?
     let alerts: [WatchAlert]
 }
 
 @MainActor @Observable
 final class WatchModel {
     var installed = false
+    /// Hours between checks when nothing changes (the agent also runs on every change of the launch folders).
+    var intervalHours: UInt64?
+    var lastRun: Date?
     var alerts: [WatchAlert] = []
     var busy = false
     var error: String?
@@ -37,18 +42,24 @@ final class WatchModel {
         do {
             let s: WatchStatus = try await Self.run(["--json", "watch", "--status"])
             installed = s.installed
+            intervalHours = s.intervalHours
+            lastRun = s.lastRunUnix.map { Date(timeIntervalSince1970: TimeInterval($0)) }
             alerts = s.alerts
         } catch {
             self.error = error.localizedDescription
         }
     }
 
-    func set(_ on: Bool) async {
+    static let frequencies: [UInt64] = [1, 6, 12, 24]
+
+    /// Turn the watch on (with `everyHours`, default: current or 6) or off.
+    func set(_ on: Bool, everyHours: UInt64? = nil) async {
         busy = true
         error = nil
         defer { busy = false }
+        let hours = everyHours ?? intervalHours ?? 6
         do {
-            _ = try await Self.output(["watch", on ? "--install" : "--uninstall"])
+            _ = try await Self.output(on ? ["watch", "--install", "--every-hours", String(hours)] : ["watch", "--uninstall"])
         } catch {
             self.error = error.localizedDescription
         }
@@ -106,20 +117,53 @@ struct WatchSidebarRow: View {
                     .disabled(watch.busy)
             }
             .padding(.horizontal, 12)
-            Text(subtitle).font(.caption).foregroundStyle(watch.recent.isEmpty ? Color.secondary : .red)
-                .padding(.horizontal, 12)
+            Group {
+                if !watch.recent.isEmpty {
+                    Text("\(watch.recent.count) alert\(watch.recent.count == 1 ? "" : "s") this week: see the home screen")
+                        .foregroundStyle(.red)
+                } else if watch.installed {
+                    HStack(spacing: 4) {
+                        Menu {
+                            ForEach(WatchModel.frequencies, id: \.self) { h in
+                                Button { Task { await watch.set(true, everyHours: h) } } label: {
+                                    Text(Self.label(h)) + Text(h == watch.intervalHours ? "  ✓" : "")
+                                }
+                            }
+                        } label: {
+                            Text("Every \(Self.label(watch.intervalHours ?? 6).lowercased())")
+                        }
+                        .menuStyle(.borderlessButton).fixedSize()
+                        .help("Also runs right away whenever a launch agent or daemon is added or changed.")
+                        Text("+ on every change").foregroundStyle(.secondary)
+                    }
+                    if let last = watch.lastRun {
+                        (Text("Last check ") + Text(last, style: .relative) + Text(" ago")).foregroundStyle(.secondary)
+                    } else {
+                        Text("Not run yet").foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text("Off: turn on to be alerted about new launch items").foregroundStyle(.secondary)
+                }
+            }
+            .font(.caption)
+            .padding(.horizontal, 12)
             if let e = watch.error {
                 Text(e).font(.caption).foregroundStyle(.red).padding(.horizontal, 12)
             }
         }
         .padding(.bottom, 8)
-        .help("Checks launch agents and daemons whenever they change and every 6 hours, and notifies you when a suspicious one appears.")
-        .task { await watch.refresh() }
+        .help("Checks launch agents and daemons whenever they change and on a schedule, and notifies you when a suspicious one appears.")
+        .task {
+            // Keep "last check" current while the app is open.
+            while !Task.isCancelled {
+                await watch.refresh()
+                try? await Task.sleep(for: .seconds(60))
+            }
+        }
     }
 
-    private var subtitle: String {
-        if !watch.recent.isEmpty { return "\(watch.recent.count) alert\(watch.recent.count == 1 ? "" : "s") this week: see the home screen" }
-        return watch.installed ? "On · no alerts this week" : "Off"
+    static func label(_ hours: UInt64) -> String {
+        hours == 1 ? "Hour" : hours == 24 ? "Day" : "\(hours) hours"
     }
 }
 

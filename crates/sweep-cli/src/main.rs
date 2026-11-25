@@ -75,9 +75,12 @@ enum Cmd {
     },
     /// Background watch for new suspicious launch agents/daemons. Without options: one pass (what the agent runs).
     Watch {
-        /// Install the user LaunchAgent that runs the watch when a launch folder changes and every 6 hours.
+        /// Install the user LaunchAgent that runs the watch when a launch folder changes and every N hours.
         #[arg(long, conflicts_with_all = ["uninstall", "status"])]
         install: bool,
+        /// With --install: how often to check even when nothing changed, in hours (1 to 168).
+        #[arg(long, default_value_t = 6, value_parser = clap::value_parser!(u64).range(1..=168), requires = "install")]
+        every_hours: u64,
         /// Stop and remove that LaunchAgent (its plist goes to the Trash).
         #[arg(long, conflicts_with = "status")]
         uninstall: bool,
@@ -229,21 +232,31 @@ fn main() -> Result<()> {
             let flagged = jobs.iter().filter(|j| j.risk > persistence::Risk::Info).count();
             println!("\n{total} launch jobs, {flagged} with red flags");
         }
-        Cmd::Watch { install, uninstall, status } => {
+        Cmd::Watch { install, every_hours, uninstall, status } => {
             let store = watch::Store::new(&env.state_dir);
             if install {
-                let plist = watch_install(&env)?;
+                let plist = watch_install(&env, every_hours)?;
                 println!("watch installed: {}", tilde(&plist));
-                println!("it runs now, whenever a LaunchAgents/LaunchDaemons folder changes, and every 6 hours");
+                println!("it runs now, whenever a LaunchAgents/LaunchDaemons folder changes, and every {every_hours} h");
             } else if uninstall {
                 println!("{}", if watch_uninstall()? { "watch removed (its plist is in the Trash)" } else { "watch was not installed" });
             } else if status {
                 let alerts = store.alerts();
                 let installed = watch_plist().exists();
+                let interval = watch_interval_hours();
+                let last = store.last_run();
                 if cli.json {
-                    return print_json(&serde_json::json!({ "installed": installed, "baseline": store.baseline().is_some(), "alerts": alerts }));
+                    return print_json(&serde_json::json!({
+                        "installed": installed, "interval_hours": interval, "last_run_unix": last,
+                        "baseline": store.baseline().is_some(), "alerts": alerts,
+                    }));
                 }
-                println!("watch: {}", if installed { "installed" } else { "not installed (sweep watch --install)" });
+                match (installed, interval) {
+                    (true, Some(h)) => println!("watch: on, runs when a launch folder changes and every {h} h"),
+                    (true, None) => println!("watch: on"),
+                    _ => println!("watch: off (sweep watch --install)"),
+                }
+                println!("last check: {}", last.map(ago).unwrap_or_else(|| "never".into()));
                 if alerts.is_empty() {
                     println!("no alerts");
                 }
@@ -316,7 +329,13 @@ fn gui_domain() -> String {
 }
 
 /// Write the LaunchAgent pointing at this very binary, and (re)load it.
-fn watch_install(env: &Env) -> Result<PathBuf> {
+/// `StartInterval` of the installed agent, in hours.
+fn watch_interval_hours() -> Option<u64> {
+    let v = plist::Value::from_file(watch_plist()).ok()?;
+    v.as_dictionary()?.get("StartInterval")?.as_unsigned_integer().map(|s| s / 3600)
+}
+
+fn watch_install(env: &Env, every_hours: u64) -> Result<PathBuf> {
     use plist::{Dictionary, Value};
     let exe = std::env::current_exe()?.canonicalize()?;
     let h = home();
@@ -330,7 +349,7 @@ fn watch_install(env: &Env) -> Result<PathBuf> {
         "WatchPaths".into(),
         Value::Array(vec![s(&h.join("Library/LaunchAgents")), "/Library/LaunchAgents".into(), "/Library/LaunchDaemons".into()]),
     );
-    d.insert("StartInterval".into(), Value::Integer((6 * 3600).into()));
+    d.insert("StartInterval".into(), Value::Integer((every_hours * 3600).into()));
     d.insert("RunAtLoad".into(), true.into());
     d.insert("ProcessType".into(), "Background".into());
     d.insert("LowPriorityIO".into(), true.into());
