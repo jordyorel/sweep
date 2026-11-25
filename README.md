@@ -35,8 +35,8 @@ This is an on-demand checker, not real-time antivirus protection.
 
 ## Install
 
-Download `Sweep.dmg` from the [Releases](../../releases) page, open it and drag **Sweep** to **Applications**.
-(No release has been published yet: until then, [build it from source](#build-from-source).)
+Download the latest `Sweep-<version>.dmg` from the [Releases](../../releases) page, open it and drag **Sweep** to
+**Applications**. You can also [build it from source](#build-from-source).
 
 Targets macOS 14 or later; so far it has only been tested on macOS 27.
 
