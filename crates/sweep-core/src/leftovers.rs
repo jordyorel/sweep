@@ -1,7 +1,8 @@
-//! Finding the files an app leaves behind (`-[ACAppBundle fetchRelatedFiles]`).
+//! Finding the files an app leaves behind: preferences, caches, containers, launch items, logs…
 //!
-//! The section numbers in comments refer to `docs/appcleaner-internals.md`.
-//! Every finding records *why* it matched, so a dry run can be audited.
+//! Matching is by bundle id (exact, prefix) and by app name (with conservative rules for short or generic
+//! names), in the folders where macOS apps keep their data. Every finding records *why* it matched, so a
+//! dry run can be audited, and anything that might belong to something else is suggested but not pre-selected.
 
 use crate::bundle::{Bundle, BundleKind};
 use crate::env::Env;
@@ -78,7 +79,7 @@ pub struct Options {
 
 type Hit = (PathBuf, String);
 
-/// Walk `dirs` like AppCleaner's NSDirectoryEnumerator loop.
+/// Walk `dirs` and collect the items `m` accepts.
 ///
 /// `max_depth == 0` means direct children only. A matching directory is not descended into.
 /// Matching is on the normalized item name only.
@@ -102,7 +103,7 @@ fn walk(dirs: &[PathBuf], max_depth: usize, m: &dyn Fn(&str) -> Option<String>) 
     out
 }
 
-/// §5: the name-based matcher used for Library roots, caches, logs …
+/// Matches an item name against the app's bundle id and names: used for the Library roots, caches, logs …
 struct NameMatcher {
     id: String,
     is_sub: bool,
@@ -195,7 +196,7 @@ pub fn scan(path: &Path, env: &Env, opts: &Options) -> anyhow::Result<Report> {
     let sip_protected = is_sip_protected(&bundle.path);
     let mut c = Collector { env, out: Vec::new(), via: None };
 
-    // §6.1 nested bundles + embedded Automator services
+    // Helpers nested in the app (login items, XPC services…) leave their own files: scan them too.
     let (nested, services) =
         if bundle.kind == BundleKind::App { parse_bundle(&bundle.path) } else { (vec![], vec![]) };
 
@@ -215,7 +216,7 @@ pub fn scan(path: &Path, env: &Env, opts: &Options) -> anyhow::Result<Report> {
         .collect();
     findings.sort_by(|a, b| a.path.cmp(&b.path));
 
-    // The bundle first, then its alias and parent folder (§6.12).
+    // The bundle first, then its alias and the folder that was created for it.
     let mut head = vec![Finding {
         path: bundle.path.clone(),
         category: Category::Bundle,
@@ -229,7 +230,7 @@ pub fn scan(path: &Path, env: &Env, opts: &Options) -> anyhow::Result<Report> {
     }
     if let Some((p, reason)) = related_parent_dir(&bundle, env) {
         findings.retain(|f| !f.path.starts_with(&p));
-        // Deviation from AppCleaner: never pre-selected, because a whole folder may hold other things.
+        // Never pre-selected: a whole folder may hold other things the user wants to keep.
         head.push(Finding { path: p, category: Category::ParentFolder, reason, selected: false, size: 0, via: None });
     }
     head.append(&mut findings);
@@ -251,7 +252,7 @@ fn fetch(b: &Bundle, services: &[String], opts: &Options, c: &mut Collector) {
     let nm = NameMatcher::new(b);
     let is_app = b.kind == BundleKind::App;
 
-    // §6.2 services (top-level app only)
+    // Services menu items: Automator workflows the app installed, or named after it (top-level app only).
     if is_app && !b.is_sub {
         let svc: HashSet<String> = services.iter().cloned().collect();
         let hits = walk(&env.library("Services"), 0, &|f| {
@@ -264,7 +265,8 @@ fn fetch(b: &Bundle, services: &[String], opts: &Options, c: &mut Collector) {
         c.add(hits, Category::Services, true);
     }
 
-    // §6.4 preferences
+    // Preferences: by bundle id (exact match only for very short ids), by app name only when the name is long
+    // enough not to catch other apps' files.
     let name = b.name.clone();
     let name_ns = remove_spaces(&name);
     let sourceforge = id == "net.sourceforge";
@@ -298,7 +300,7 @@ fn fetch(b: &Bundle, services: &[String], opts: &Options, c: &mut Collector) {
         c.add(hits, Category::Preferences, true);
     }
 
-    // §6.5 misc (top-level only)
+    // Other Library places named after the app, and web data by bundle id (top-level app only).
     if !b.is_sub {
         let mut dirs = env.library("");
         dirs.extend(env.app_support(""));
@@ -322,7 +324,7 @@ fn fetch(b: &Bundle, services: &[String], opts: &Options, c: &mut Collector) {
         }
     }
 
-    // §6.6 containers + App Groups
+    // Sandbox containers, and App Group containers declared in the app's entitlements.
     if !id.is_empty() {
         let mut dirs = env.library("Containers");
         dirs.extend(env.library("Application Scripts"));
@@ -348,11 +350,11 @@ fn fetch(b: &Bundle, services: &[String], opts: &Options, c: &mut Collector) {
                 groups.iter().any(|g| g == f).then(|| format!("app group `{f}` from the app's entitlements"))
             }
         });
-        // Shared with sibling apps, so not pre-selected (same as AppCleaner).
+        // Shared with sibling apps from the same developer, so not pre-selected.
         c.add(hits, Category::GroupContainers, false);
     }
 
-    // §6.7 caches (apps)
+    // Caches, including the help-viewer indexes generated for the app.
     if is_app {
         let mut dirs = env.caches("");
         dirs.extend(env.caches("Metadata"));
@@ -365,7 +367,7 @@ fn fetch(b: &Bundle, services: &[String], opts: &Options, c: &mut Collector) {
         }
     }
 
-    // §6.8 saved state
+    // Window state saved for "reopen windows when logging back in".
     if !id.is_empty() {
         let hits = walk(&env.library("Saved Application State"), 0, &|f| {
             if has_iprefix(f, &id) {
@@ -379,7 +381,7 @@ fn fetch(b: &Bundle, services: &[String], opts: &Options, c: &mut Collector) {
         c.add(hits, Category::SavedState, true);
     }
 
-    // §6.9 package receipts (apps)
+    // Installer package receipts.
     if is_app && idl >= 4 {
         let hits = walk(std::slice::from_ref(&env.receipts), 0, &|f| {
             has_iprefix(f, &id).then(|| format!("installer receipt for `{id}`"))
@@ -387,7 +389,8 @@ fn fetch(b: &Bundle, services: &[String], opts: &Options, c: &mut Collector) {
         c.add(hits, Category::Receipts, true);
     }
 
-    // §6.10 launch agents / daemons / privileged helpers
+    // Launch agents, launch daemons and privileged helper tools: by bundle id, and by the helper names the app
+    // declares in `SMPrivilegedExecutables`.
     let agents = env.library("LaunchAgents");
     let daemons = env.library("LaunchDaemons");
     let helpers = env.library("PrivilegedHelperTools");
@@ -421,7 +424,7 @@ fn fetch(b: &Bundle, services: &[String], opts: &Options, c: &mut Collector) {
         c.add(hits, Category::PrivilegedHelpers, true);
     }
 
-    // §6.11 crash reports + logs
+    // Crash reports (named after the executable) and logs.
     let exe = format!("{}_", b.executable);
     let mut crash_dirs = env.app_support("CrashReporter");
     crash_dirs.extend(env.library("Logs/DiagnosticReports"));
@@ -430,7 +433,7 @@ fn fetch(b: &Bundle, services: &[String], opts: &Options, c: &mut Collector) {
     c.add(walk(&env.library("Logs"), 3, &|f| nm.check(f)), Category::Logs, true);
 }
 
-/// §6.1: helpers nested inside the app, and Automator `.workflow` names.
+/// Helpers nested inside the app, and the names of the Automator `.workflow` services it ships.
 fn parse_bundle(app: &Path) -> (Vec<Bundle>, Vec<String>) {
     fn visit(dir: &Path, level: usize, nested: &mut Vec<Bundle>, services: &mut Vec<String>) {
         let Ok(rd) = fs::read_dir(dir) else { return };
@@ -461,10 +464,10 @@ fn parse_bundle(app: &Path) -> (Vec<Bundle>, Vec<String>) {
     (nested, services)
 }
 
-/// §6.12: an enclosing folder created for the app (e.g. `/Applications/Foo/Foo.app`).
+/// An enclosing folder created for the app (e.g. `/Applications/Foo/Foo.app`).
 ///
-/// Deviation: AppCleaner searches the unescaped regex `<name>[0-9BETAbeta.-]*` anywhere in the
-/// folder name. We anchor and escape it, so `Foo` no longer sweeps up `FooBar Tools`.
+/// The folder name (spaces ignored) must be exactly the app name, optionally followed by a version or a
+/// release channel ("Foo 2", "Foo-1.4", "Foo Beta"). Anchored, so `Foo` never claims `FooBar Tools`.
 fn related_parent_dir(b: &Bundle, env: &Env) -> Option<(PathBuf, String)> {
     if b.kind != BundleKind::App || b.is_sub {
         return None;
@@ -479,7 +482,8 @@ fn related_parent_dir(b: &Bundle, env: &Env) -> Option<(PathBuf, String)> {
         let hit = if ns_len(&app) < 4 {
             eq_ci(&pname, &app)
         } else {
-            Regex::new(&format!(r"(?i)^{}[0-9BETAbeta.\-]*$", regex::escape(&app))).unwrap().is_match(&pname)
+            let suffix = r"(?:[-_.]?(?:v?\d+(?:\.\d+)*|beta|alpha|preview|trial))*";
+            Regex::new(&format!(r"(?i)^{}{suffix}$", regex::escape(&app))).unwrap().is_match(&pname)
         };
         if hit {
             return Some((parent, format!("folder named after the app `{app}`")));
@@ -518,7 +522,7 @@ pub fn sip_enabled() -> bool {
 
 const SF_RESTRICTED: u32 = 0x0008_0000;
 
-/// `-[NSURL isSystemProtected]`
+/// Protected by System Integrity Protection (or a built-in app in `/System/Applications`): cannot be removed.
 pub fn is_sip_protected(p: &Path) -> bool {
     if p.to_string_lossy().starts_with("/System/Applications/") {
         return true;

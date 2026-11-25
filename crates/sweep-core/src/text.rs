@@ -1,65 +1,65 @@
 //! String primitives used by the matchers.
 //!
-//! Each function mirrors the Foundation call AppCleaner uses, so the matching
-//! behaves the same way (see `docs/appcleaner-internals.md` §4).
+//! They compare names the way macOS's Foundation does (case- and diacritic-insensitive, Unicode-normalized),
+//! because file names on disk and in `Info.plist` are written by Cocoa apps.
 
 use regex::Regex;
 use std::sync::OnceLock;
 use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
-/// Lowercase only (`caseInsensitiveCompare` / `NSCaseInsensitiveSearch`).
+/// Lowercase only (like `NSCaseInsensitiveSearch`).
 fn lower(s: &str) -> String {
     s.to_lowercase()
 }
 
-/// Lowercase and drop diacritics (`NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch`).
+/// Lowercase and drop diacritics (like `NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch`).
 fn fold(s: &str) -> String {
     s.nfd().filter(|c| !is_combining_mark(*c)).flat_map(char::to_lowercase).collect()
 }
 
-/// `-isEqualIgnoringCase:`
+/// Equal, ignoring case.
 pub fn eq_ci(a: &str, b: &str) -> bool {
     lower(a) == lower(b)
 }
 
-/// `-hasIPrefix:`: anchored, case- and diacritic-insensitive. An empty prefix never matches.
+/// Starts with `prefix`, ignoring case and diacritics ("Café" starts with "cafe"). An empty prefix never matches.
 pub fn has_iprefix(s: &str, prefix: &str) -> bool {
     !prefix.is_empty() && fold(s).starts_with(&fold(prefix))
 }
 
-/// `-containsStringIgnoringCase:`. An empty needle never matches.
+/// Contains `needle`, ignoring case. An empty needle never matches.
 pub fn contains_ci(s: &str, needle: &str) -> bool {
     !needle.is_empty() && lower(s).contains(&lower(needle))
 }
 
-/// `-normalizedString`: trim whitespace, then trim `.` characters.
+/// Trim whitespace, then leading/trailing dots (".Hidden." → "Hidden").
 pub fn normalized(s: &str) -> String {
     s.trim().trim_matches('.').to_string()
 }
 
-/// `-isBlank`
+/// Empty or only whitespace.
 pub fn is_blank(s: &str) -> bool {
     s.trim().is_empty()
 }
 
-/// `-stringByRemovingWhitespaces` (spaces only, like the original).
+/// Remove spaces (only spaces: "Foo Bar" → "FooBar", the usual folder spelling of a two-word app).
 pub fn remove_spaces(s: &str) -> String {
     s.replace(' ', "")
 }
 
-/// `-stringByStrippingTrailingDigits`: regex `\s*\d+$` → "".
+/// Drop a trailing number and the spaces before it ("Photoshop 2024" → "Photoshop").
 pub fn strip_trailing_digits(s: &str) -> String {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"\s*\d+$").unwrap()).replace(s, "").into_owned()
 }
 
-/// Number of UTF-16 code units, which is what `-[NSString length]` returns.
-/// All the original length guards (≥4, ≥8 …) are in these units.
+/// Number of UTF-16 code units, which is what `-[NSString length]` returns. The length thresholds of the
+/// matchers (≥4, ≥8 …) are in these units, so names with accents or emoji are measured like macOS does.
 pub fn ns_len(s: &str) -> usize {
     s.encode_utf16().count()
 }
 
-/// File name without its last extension (`-stringByDeletingPathExtension`).
+/// File name without its last extension (like `-stringByDeletingPathExtension`).
 pub fn stem(name: &str) -> &str {
     match name.rfind('.') {
         Some(i) if i > 0 => &name[..i],
@@ -88,7 +88,7 @@ mod tests {
     }
 
     #[test]
-    fn normalization_matches_foundation() {
+    fn normalization() {
         assert_eq!(normalized("  ..Foo Bar.. "), "Foo Bar");
         assert_eq!(strip_trailing_digits("Photoshop 2024"), "Photoshop");
         assert_eq!(remove_spaces("Foo Bar Baz"), "FooBarBaz");

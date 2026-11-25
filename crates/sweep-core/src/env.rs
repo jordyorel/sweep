@@ -2,8 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
-/// The `/Library/<X>` folders that must never be returned as a match themselves
-/// (AppCleaner's `+[ACBundle protectedPaths]`). Applied to both the user and local Library.
+/// The standard `Library/<X>` folders of macOS. They must never be returned as a match themselves (only things
+/// inside them), whatever an app is called. Applied to both the user and the local Library.
 pub const PROTECTED_LIBRARY_DIRS: &[&str] = &[
     "Accounts", "Application Support", "Audio", "Autosave Information", "Caches", "Caches/Metadata",
     "ColorPickers", "Colors", "ColorSync", "Components", "Compositions", "Containers",
@@ -69,17 +69,17 @@ impl Env {
         [&self.user_library, &self.local_library]
     }
 
-    /// `libraryPaths` / `libraryPathsByAppendingPathComponent:`
+    /// `sub` inside both the user and the local Library (`~/Library/<sub>`, `/Library/<sub>`).
     pub fn library(&self, sub: &str) -> Vec<PathBuf> {
         self.libs().iter().map(|l| if sub.is_empty() { l.to_path_buf() } else { l.join(sub) }).collect()
     }
 
-    /// `cachesPathsByAppendingPathComponent:`
+    /// `Caches/<sub>` in both Libraries.
     pub fn caches(&self, sub: &str) -> Vec<PathBuf> {
         self.library(&join("Caches", sub))
     }
 
-    /// `appSupportPathsByAppendingPathComponent:`
+    /// `Application Support/<sub>` in both Libraries.
     pub fn app_support(&self, sub: &str) -> Vec<PathBuf> {
         self.library(&join("Application Support", sub))
     }

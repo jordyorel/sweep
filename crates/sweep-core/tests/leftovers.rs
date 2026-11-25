@@ -115,3 +115,22 @@ fn short_names_need_an_exact_match() {
     assert!(paths.contains(&"Fox".into()));
     assert!(!paths.contains(&"Fox-data".into()));
 }
+
+#[test]
+fn parent_folder_allows_versions_and_channels_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let r = tmp.path();
+    let env = Env::rooted(r);
+    let parent_of = |folder: &str| {
+        let app = r.join("Applications").join(folder).join("Widget Maker.app");
+        info_plist(&app, "com.example.widgetmaker", "Widget Maker", "");
+        let report = scan(&app, &env, &Options::default()).unwrap();
+        report.findings.iter().any(|f| f.category == Category::ParentFolder)
+    };
+    for ok in ["Widget Maker", "WidgetMaker 2", "Widget Maker-1.4", "Widget Maker Beta", "WidgetMaker v3"] {
+        assert!(parent_of(ok), "{ok} should be suggested");
+    }
+    for no in ["Widget Maker Tools", "My Widget Maker", "WidgetMakerPro"] {
+        assert!(!parent_of(no), "{no} must not be suggested");
+    }
+}

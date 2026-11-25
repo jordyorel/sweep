@@ -1,5 +1,5 @@
-//! Reading an app/plugin bundle and deriving the identifiers used for matching
-//! (`-[ACBundle initWithURL:]`, `-normalizeBundleId`).
+//! Reading an app/plugin bundle (`Info.plist`) and deriving the names and identifiers used to recognise
+//! the files it leaves behind.
 
 use crate::text::{self, is_blank, normalized};
 use anyhow::{bail, Context, Result};
@@ -9,7 +9,7 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// Extensions treated as plugin bundles (`+[ACBundle allowedPluginExtensions]`).
+/// Bundle extensions besides `.app` that can be uninstalled on their own (plug-ins, extensions, drivers…).
 pub const PLUGIN_EXTENSIONS: &[&str] = &[
     "framework", "plugin", "webplugin", "bundle", "appex", "mdimporter", "dext", "qlgenerator", "xpc",
     "driver", "prefpane", "mailbundle", "component", "service",
@@ -101,31 +101,34 @@ pub fn read_info_plist(bundle: &Path) -> Option<Dictionary> {
         .and_then(Value::into_dictionary)
 }
 
-/// CFBundleName → normalized; fall back to the file name; drop a trailing ` 12.34.56` date suffix.
+/// CFBundleName, normalized; falls back to the file name. A trailing build date (" 24.01.05", " 24-01-05")
+/// is dropped, so a dated build still finds the files of the app it belongs to.
 fn derive_name(cf_name: Option<&str>, file_name: &str) -> String {
     static DATE: OnceLock<Regex> = OnceLock::new();
     let mut name = cf_name.map(normalized).unwrap_or_default();
     if is_blank(&name) {
         name = normalized(text::stem(file_name));
     }
-    let re = DATE.get_or_init(|| Regex::new(r"(?i)^.+( \d{2}.\d{2}.\d{2})$").unwrap());
-    if let Some(start) = re.captures(&name).and_then(|c| c.get(1)).map(|m| m.start()) {
-        name.truncate(start);
+    let re = DATE.get_or_init(|| Regex::new(r" \d{2}[./-]\d{2}[./-]\d{2}$").unwrap());
+    if let Some(m) = re.find(&name).filter(|m| m.start() > 0) {
+        name.truncate(m.start());
     }
     name
 }
 
-/// `-[ACBundle normalizeBundleId]`: strip `.app`, `.demo`, `.trial`, version digits … from the end.
+/// Reduce a bundle id to its stable part, so that "com.foo.bar.trial" or "com.foo.bar.2" still find
+/// "com.foo.bar" files: the last component is dropped when it only names an edition (`app`, `application`,
+/// `demo`, `trial`, optionally numbered) or a version number. At least two components are always kept.
 pub fn normalize_bundle_id(id: &str) -> String {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    if text::ns_len(id) <= 7 {
-        return id.to_string();
+    const EDITIONS: &[&str] = &["app", "application", "demo", "trial"];
+    let Some((head, last)) = id.rsplit_once('.') else { return id.to_string() };
+    if !head.contains('.') {
+        return id.to_string(); // "com.foo": nothing left to strip
     }
-    let re = RE.get_or_init(|| Regex::new(r"(?i)\.(app|application|demo|trial)?[0-9\-_ab]*$").unwrap());
-    match re.find(id) {
-        Some(m) if m.start() > 4 && !m.is_empty() => id[..m.start()].to_string(),
-        _ => id.to_string(),
-    }
+    let last = last.to_lowercase();
+    let word = last.trim_end_matches(|c: char| c.is_ascii_digit() || c == '-' || c == '_');
+    let is_version = word.is_empty() && !last.is_empty();
+    if is_version || EDITIONS.contains(&word) { head.to_string() } else { id.to_string() }
 }
 
 #[cfg(test)]
@@ -140,9 +143,11 @@ mod tests {
         assert_eq!(normalize_bundle_id("com.foo.bar.10"), "com.foo.bar");
         assert_eq!(normalize_bundle_id("com.foo.bar.trial"), "com.foo.bar");
         assert_eq!(normalize_bundle_id("com.foo.bar"), "com.foo.bar");
-        assert_eq!(normalize_bundle_id("com.a.b"), "com.a.b"); // too short
-        // Quirk kept for parity: a final component made only of [ab0-9-_] is removed.
-        assert_eq!(normalize_bundle_id("com.foo.ab"), "com.foo");
+        assert_eq!(normalize_bundle_id("com.a.b"), "com.a.b");
+        assert_eq!(normalize_bundle_id("com.foo.ab"), "com.foo.ab"); // a real name, not an edition
+        assert_eq!(normalize_bundle_id("com.foo.Demo-2"), "com.foo");
+        assert_eq!(normalize_bundle_id("com.foo"), "com.foo"); // always keep two components
+        assert_eq!(normalize_bundle_id("com.10"), "com.10");
     }
 
     #[test]

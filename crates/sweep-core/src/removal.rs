@@ -1,4 +1,4 @@
-//! Removal (§7): move an app and its selected leftovers to the Trash, with undo.
+//! Removal: move an app and its selected leftovers to the Trash, with undo.
 //!
 //! Nothing is ever deleted permanently. Every move is written to an undo journal in
 //! [`Env::state_dir`] as soon as it happens, so `undo` works even after a crash or from another process.
@@ -196,7 +196,7 @@ pub struct Outcome {
     pub failed: Vec<Problem>,
 }
 
-/// Move everything in `plan` to the Trash (§7 step 4).
+/// Move everything in `plan` to the Trash.
 ///
 /// Refuses to start while a process from inside the app bundle is running, unless `allow_running`.
 /// Errors on single items do not stop the others; they are reported in the [`Outcome`].
@@ -400,7 +400,8 @@ impl Platform for System {
     }
 }
 
-/// §7 step 3: without Full Disk Access, macOS blocks moving some items (other apps' containers, …).
+/// Without Full Disk Access, macOS blocks moving some items (other apps' containers, …). Reading the TCC
+/// database is only allowed with that access, so trying to open it tells which case we are in.
 pub fn has_full_disk_access() -> bool {
     !matches!(
         fs::File::open("/Library/Application Support/com.apple.TCC/TCC.db"),
