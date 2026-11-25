@@ -2193,6 +2193,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "libc",
+ "plist",
  "serde",
  "serde_json",
  "sweep-core",
@@ -2222,6 +2224,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sweep-core",
+ "sweep-malware",
 ]
 
 [[package]]
@@ -2232,7 +2235,9 @@ dependencies = [
  "libc",
  "plist",
  "serde",
+ "serde_json",
  "sweep-core",
+ "tempfile",
  "yara-x",
 ]
 
