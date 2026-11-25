@@ -32,11 +32,25 @@ struct ContentView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(model.filteredApps, id: \.path, selection: Binding(get: { model.selectedApp }, set: { model.selectedApp = $0 })) { app in
-                AppRow(path: app.path, name: app.name, subtitle: app.version)
+            // Pinned search field, list, watch row. Not `.searchable` + `.safeAreaInset`: with those the rows scrolled
+            // under the title bar, the search field scrolled away, and a black separator line was drawn across the
+            // window buttons. Here the list starts below the title bar and nothing scrolls under it.
+            VStack(spacing: 0) {
+                SidebarSearchField(text: Binding(get: { model.search }, set: { model.search = $0 }))
+                Divider()
+            ScrollViewReader { proxy in
+                List(model.filteredApps, id: \.path, selection: Binding(get: { model.selectedApp }, set: { model.selectedApp = $0 })) { app in
+                    AppRow(path: app.path, name: app.name, subtitle: app.version)
+                }
+                .onChange(of: model.apps.count) { _, _ in
+                    // Dev hook: `--scroll-bottom` scrolls the list to the end, to check scrolling by screenshot.
+                    if ProcessInfo.processInfo.arguments.contains("--scroll-bottom"), let last = model.apps.last {
+                        proxy.scrollTo(last.path, anchor: .bottom)
+                    }
+                }
             }
-            .searchable(text: Binding(get: { model.search }, set: { model.search = $0 }), placement: .sidebar, prompt: "Search apps")
-            .safeAreaInset(edge: .bottom, spacing: 0) { WatchSidebarRow() }
+                WatchSidebarRow()
+            }
             .navigationSplitViewColumnWidth(min: 220, ideal: 260)
         } detail: {
             VStack(spacing: 0) {
@@ -83,6 +97,24 @@ struct ContentView: View {
         } message: {
             Text((model.runningConflict ?? "") + "\n\nQuitting it first is safer.")
         }
+    }
+}
+
+struct SidebarSearchField: View {
+    let text: Binding<String>
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Search apps", text: text).textFieldStyle(.plain)
+            if !text.wrappedValue.isEmpty {
+                Button { text.wrappedValue = "" } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.borderless).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 7))
+        .padding(.horizontal, 10).padding(.vertical, 8)
     }
 }
 
