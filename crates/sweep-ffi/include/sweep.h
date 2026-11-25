@@ -15,6 +15,9 @@ unsigned long long sweep_scan_progress(void);
 char *sweep_scan_folder(const char *path, unsigned long long token);
 char *sweep_scan_preset(const char *preset, unsigned long long token); // preset: "quick" | "full"
 char *sweep_trash_findings(const char *kind, const char *paths_json); // kind: "launch_item" | "malware"
+// Administrator actions (show macOS's password prompt; block until it is answered).
+char *sweep_trash_privileged(const char *kind, const char *app, const char *paths_json, const char *journal);
+char *sweep_undo_privileged(const char *id);
 char *sweep_journals(void);
 char *sweep_undo(const char *id); // NULL = latest
 char *sweep_has_full_disk_access(void);

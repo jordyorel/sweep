@@ -37,6 +37,12 @@ pub struct Env {
 impl Env {
     pub fn system() -> Self {
         let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| "/var/empty".into());
+        Self::for_home(&home)
+    }
+
+    /// The real system, for the user whose home folder is `home` (used by the root process, which must not
+    /// trust `$HOME`).
+    pub fn for_home(home: &Path) -> Self {
         Env {
             user_library: home.join("Library"),
             local_library: "/Library".into(),

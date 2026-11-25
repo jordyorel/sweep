@@ -25,6 +25,12 @@ final class AppModel {
     var error: String?
     /// Last removal, shown in a banner with an Undo button.
     var lastOutcome: Outcome?
+    /// App of the last removal, and the undo journal covering it (also set when only the administrator part moved
+    /// something).
+    private var lastApp: String?
+    private var undoJournal: String?
+    /// Result of the administrator part of the last removal.
+    var privilegedMessage: String?
     var undoMessage: String?
     /// Set when removal was refused because the app is running.
     var runningConflict: String?
@@ -98,6 +104,9 @@ final class AppModel {
         do {
             let out = try await Task.detached { try Core.remove(app, chosen: paths, allowRunning: allowRunning) }.value
             lastOutcome = out
+            lastApp = app
+            undoJournal = out.journal
+            privilegedMessage = nil
             undoMessage = nil
             if !out.moved.isEmpty { NSSound(named: "Purr")?.play() }
             report = nil
@@ -109,18 +118,58 @@ final class AppModel {
         }
     }
 
+    /// Move the items the last removal could not (owned by root) behind macOS's administrator prompt.
+    func removeWithPassword() async {
+        guard let out = lastOutcome, !out.needsPrivileges.isEmpty else { return }
+        busy = true
+        error = nil
+        defer { busy = false }
+        let app = lastApp
+        let paths = out.needsPrivileges.map(\.path)
+        let journal = undoJournal
+        do {
+            let r = try await Task.detached { try Core.trashPrivileged(kind: "leftovers", app: app, paths: paths, journal: journal) }.value
+            undoJournal = r.journal ?? undoJournal
+            var msg = "Moved \(r.response.moved.count) system item\(r.response.moved.count == 1 ? "" : "s") to the Trash with administrator rights."
+            if !r.response.failed.isEmpty { msg += " \(r.response.failed.count) failed: \(r.response.failed[0].reason)" }
+            privilegedMessage = msg
+            if !r.response.moved.isEmpty { NSSound(named: "Purr")?.play() }
+            // The banner no longer offers the password button: those items are handled.
+            lastOutcome = Outcome(journal: undoJournal, moved: out.moved + r.response.moved, missing: out.missing,
+                                  needsPrivileges: [], failed: out.failed + r.response.failed)
+        } catch {
+            let msg = error.localizedDescription
+            self.error = msg == "cancelled" ? nil : msg
+        }
+    }
+
     func undo() async {
         busy = true
         defer { busy = false }
-        let id = lastOutcome?.journal
+        let id = undoJournal ?? lastOutcome?.journal
         do {
             let u = try await Task.detached { try Core.undo(id) }.value
-            var parts = ["Restored \(u.restored.count) item\(u.restored.count == 1 ? "" : "s")."]
+            var restored = u.restored.count
+            var failed = u.failed.map(\.reason)
+            if !u.needsPrivileges.isEmpty {
+                // Items moved with the administrator password: macOS asks for it again.
+                let journal = u.journal
+                do {
+                    let r = try await Task.detached { try Core.undoPrivileged(journal) }.value
+                    restored += r.restored.count
+                    failed += r.failed.map(\.reason)
+                } catch {
+                    let msg = error.localizedDescription
+                    failed.append(msg == "cancelled" ? "system items left in the Trash (password cancelled)" : msg)
+                }
+            }
+            var parts = ["Restored \(restored) item\(restored == 1 ? "" : "s")."]
             if !u.conflicts.isEmpty { parts.append("\(u.conflicts.count) kept in the Trash because something already exists at the original place.") }
             if !u.gone.isEmpty { parts.append("\(u.gone.count) no longer in the Trash.") }
-            if !u.failed.isEmpty { parts.append("\(u.failed.count) failed: \(u.failed[0].reason)") }
+            if !failed.isEmpty { parts.append("\(failed.count) failed: \(failed[0])") }
             undoMessage = parts.joined(separator: " ")
             lastOutcome = nil
+            privilegedMessage = nil
             await loadApps()
         } catch {
             self.error = error.localizedDescription

@@ -193,8 +193,17 @@ struct Banners: View {
             }
             if let out = model.lastOutcome {
                 Banner(icon: "trash", tint: .accentColor, text: summary(out)) {
+                    if !out.needsPrivileges.isEmpty {
+                        Button("Use Administrator Password…") { Task { await model.removeWithPassword() } }
+                            .help("macOS asks for your password, then Sweep checks each item again and moves it to your Trash")
+                    }
                     if out.journal != nil { Button("Undo") { Task { await model.undo() } } }
                     Button("Dismiss") { model.lastOutcome = nil }
+                }
+            }
+            if let m = model.privilegedMessage {
+                Banner(icon: "lock.open", tint: .accentColor, text: m) {
+                    Button("Dismiss") { model.privilegedMessage = nil }
                 }
             }
             if let m = model.undoMessage {
@@ -208,7 +217,7 @@ struct Banners: View {
     private func summary(_ o: Outcome) -> String {
         var s = "Moved \(o.moved.count) item\(o.moved.count == 1 ? "" : "s") to the Trash."
         if !o.needsPrivileges.isEmpty {
-            s += " \(o.needsPrivileges.count) need admin rights and were left in place (not supported yet)."
+            s += " \(o.needsPrivileges.count) belong to the system and need your administrator password."
         }
         if !o.failed.isEmpty { s += " \(o.failed.count) failed: \(o.failed[0].reason)" }
         return s

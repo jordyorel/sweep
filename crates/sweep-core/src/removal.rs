@@ -85,6 +85,9 @@ pub struct Moved {
     pub original: PathBuf,
     pub trashed: PathBuf,
     pub category: Category,
+    /// Moved by the root process (administrator password): putting it back needs the password again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub privileged: bool,
 }
 
 /// One removal, as recorded for undo.
@@ -119,6 +122,50 @@ impl Journal {
     }
 }
 
+/// Add items moved by the root process to journal `id` (so one Undo covers the whole removal), or to a new
+/// journal when `id` is `None`. Returns the journal id.
+pub fn append_to_journal(env: &Env, id: Option<&str>, app_name: &str, app_path: &Path, moved: &[Moved]) -> Result<String> {
+    let existing = id.and_then(|id| journals(env).into_iter().find(|j| j.id == id));
+    let mut journal = existing.unwrap_or_else(|| {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+        Journal {
+            id: format!("{}-{}", now.as_millis(), std::process::id()),
+            app_name: app_name.to_string(),
+            app_path: app_path.to_path_buf(),
+            created_unix: now.as_secs(),
+            items: vec![],
+        }
+    });
+    journal.items.extend_from_slice(moved);
+    journal.save(env)?;
+    Ok(journal.id)
+}
+
+/// Drop items that the root process put back from journal `id`.
+pub fn forget_restored(env: &Env, id: &str, restored: &[PathBuf]) -> Result<()> {
+    let Some(mut journal) = journals(env).into_iter().find(|j| j.id == id) else { return Ok(()) };
+    journal.items.retain(|m| !restored.contains(&m.original));
+    journal.save(env)
+}
+
+/// Move `p` into `trash` (a Trash folder on the same volume) under a free name, like the Finder does
+/// ("name", "name 2", …). Used by the root process, which cannot use the user's NSFileManager Trash.
+pub fn move_into(trash: &Path, p: &Path) -> io::Result<PathBuf> {
+    let name = p.file_name().ok_or_else(|| io::Error::other("no file name"))?.to_string_lossy().into_owned();
+    let (stem, ext) = match name.rfind('.') {
+        Some(i) if i > 0 => (name[..i].to_string(), name[i..].to_string()),
+        _ => (name.clone(), String::new()),
+    };
+    let mut dst = trash.join(&name);
+    let mut n = 2;
+    while fs::symlink_metadata(&dst).is_ok() {
+        dst = trash.join(format!("{stem} {n}{ext}"));
+        n += 1;
+    }
+    fs::rename(p, &dst)?;
+    Ok(dst)
+}
+
 /// Undo journals that still have items in the Trash, newest first.
 pub fn journals(env: &Env) -> Vec<Journal> {
     let Ok(rd) = fs::read_dir(env.state_dir.join("undo")) else { return vec![] };
@@ -131,7 +178,7 @@ pub fn journals(env: &Env) -> Vec<Journal> {
     out
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Problem {
     pub path: PathBuf,
     pub reason: String,
@@ -199,7 +246,7 @@ pub fn execute(plan: &Plan, env: &Env, os: &dyn Platform, allow_running: bool) -
         }
         match os.trash(p) {
             Ok(trashed) => {
-                let m = Moved { original: p.clone(), trashed, category: item.category };
+                let m = Moved { original: p.clone(), trashed, category: item.category, privileged: false };
                 journal.items.push(m.clone());
                 journal.save(env)?; // after every move, so undo never loses track of a file
                 out.moved.push(m);
@@ -226,11 +273,14 @@ pub struct UndoOutcome {
     /// No longer in the Trash (emptied or moved by the user).
     pub gone: Vec<PathBuf>,
     pub failed: Vec<Problem>,
+    /// Moved with the administrator password: left for the privileged restore (still in the journal).
+    pub needs_privileges: Vec<Moved>,
 }
 
 /// Put the items of journal `id` (default: the latest) back where they were, in reverse order.
 ///
 /// Never overwrites anything. Items that could not be restored stay in the journal, so undo can be retried.
+/// Items moved by the root process are not touched here: they come back in `needs_privileges`.
 pub fn undo(env: &Env, id: Option<&str>) -> Result<UndoOutcome> {
     let mut journal = match id {
         Some(id) => journals(env).into_iter().find(|j| j.id == id).with_context(|| format!("no undo entry {id}"))?,
@@ -239,6 +289,11 @@ pub fn undo(env: &Env, id: Option<&str>) -> Result<UndoOutcome> {
     let mut out = UndoOutcome { journal: journal.id.clone(), ..Default::default() };
     let mut keep = Vec::new();
     for m in journal.items.iter().rev() {
+        if m.privileged {
+            out.needs_privileges.push(m.clone());
+            keep.push(m.clone());
+            continue;
+        }
         if fs::symlink_metadata(&m.trashed).is_err() {
             out.gone.push(m.original.clone());
             continue; // dropped from the journal: nothing left to restore
@@ -272,7 +327,7 @@ fn launch_label(plist: &Path) -> Option<String> {
 const UF_IMMUTABLE: u32 = 0x0000_0002;
 
 /// Clear the user "locked" flag (Finder's Locked checkbox), which would make the move fail.
-fn clear_immutable(p: &Path, meta: &fs::Metadata) -> io::Result<()> {
+pub fn clear_immutable(p: &Path, meta: &fs::Metadata) -> io::Result<()> {
     use std::os::macos::fs::MetadataExt;
     use std::os::unix::ffi::OsStrExt;
     let flags = meta.st_flags();

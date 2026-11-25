@@ -40,6 +40,21 @@ struct Moved: Codable, Sendable {
     let original: String
     let trashed: String
     let category: String
+    /// Moved with the administrator password (absent = false).
+    let privileged: Bool?
+}
+
+/// Result of an administrator action.
+struct PrivilegedResponse: Codable, Sendable {
+    let moved: [Moved]
+    let restored: [String]
+    let missing: [String]
+    let failed: [Problem]
+}
+
+struct PrivilegedTrash: Codable, Sendable {
+    let response: PrivilegedResponse
+    let journal: String?
 }
 
 struct Problem: Codable, Sendable {
@@ -61,6 +76,8 @@ struct UndoOutcome: Codable, Sendable {
     let conflicts: [String]
     let gone: [String]
     let failed: [Problem]
+    /// Moved with the administrator password: put back with `undoPrivileged`.
+    let needsPrivileges: [Moved]
 }
 
 struct Verdict: Codable, Sendable {
@@ -184,6 +201,23 @@ enum Core {
         if let id { return try call { sweep_undo(id) } }
         return try call { sweep_undo(nil) }
     }
+
+    /// Shows macOS's administrator prompt and blocks until it is answered: call off the main thread.
+    /// `kind`: "leftovers" (with `app`), "launch_item" or "malware".
+    static func trashPrivileged(kind: String, app: String?, paths: [String], journal: String?) throws -> PrivilegedTrash {
+        let json = String(decoding: try JSONEncoder().encode(paths), as: UTF8.self)
+        return try call {
+            switch (app, journal) {
+            case let (a?, j?): sweep_trash_privileged(kind, a, json, j)
+            case let (a?, nil): sweep_trash_privileged(kind, a, json, nil)
+            case let (nil, j?): sweep_trash_privileged(kind, nil, json, j)
+            case (nil, nil): sweep_trash_privileged(kind, nil, json, nil)
+            }
+        }
+    }
+
+    /// Puts back the items of journal `id` that were moved with the administrator password (prompt again).
+    static func undoPrivileged(_ id: String) throws -> PrivilegedResponse { try call { sweep_undo_privileged(id) } }
 
     static func hasFullDiskAccess() -> Bool { (try? call { sweep_has_full_disk_access() }) ?? true }
 }

@@ -128,11 +128,15 @@ final class SecurityModel {
 
     func cancelScan() { Core.cancelFolderScan() }
 
+    /// Kind of the last move ("launch_item" / "malware"), for the administrator follow-up.
+    private var lastKind = "launch_item"
+
     func trash(kind: String, paths: [String]) async {
         error = nil
         do {
             let out = try await Task.detached { try Core.trashFindings(kind: kind, paths: paths) }.value
             outcome = out
+            lastKind = kind
             undoMessage = nil
             await refreshAfterChange()
         } catch {
@@ -140,12 +144,43 @@ final class SecurityModel {
         }
     }
 
+    /// Move what the last action could not (owned by root) behind macOS's administrator prompt.
+    func trashWithPassword() async {
+        guard let out = outcome, !out.needsPrivileges.isEmpty else { return }
+        error = nil
+        let kind = lastKind
+        let paths = out.needsPrivileges.map(\.path)
+        let journal = out.journal
+        do {
+            let r = try await Task.detached { try Core.trashPrivileged(kind: kind, app: nil, paths: paths, journal: journal) }.value
+            outcome = Outcome(journal: r.journal ?? journal, moved: out.moved + r.response.moved, missing: out.missing,
+                              needsPrivileges: [], failed: out.failed + r.response.failed)
+            await refreshAfterChange()
+        } catch {
+            let msg = error.localizedDescription
+            self.error = msg == "cancelled" ? nil : msg
+        }
+    }
+
     func undo() async {
         guard let id = outcome?.journal else { return }
         do {
             let u = try await Task.detached { try Core.undo(id) }.value
-            undoMessage = "Restored \(u.restored.count) item\(u.restored.count == 1 ? "" : "s")."
+            var restored = u.restored.count
+            var note = ""
+            if !u.needsPrivileges.isEmpty {
+                do {
+                    let r = try await Task.detached { try Core.undoPrivileged(id) }.value
+                    restored += r.restored.count
+                    if !r.failed.isEmpty { note = " \(r.failed.count) failed: \(r.failed[0].reason)" }
+                } catch {
+                    let msg = error.localizedDescription
+                    note = msg == "cancelled" ? " System items were left in the Trash (password cancelled)." : " " + msg
+                }
+            }
+            undoMessage = "Restored \(restored) item\(restored == 1 ? "" : "s")."
                 + (u.conflicts.isEmpty ? "" : " \(u.conflicts.count) kept in the Trash (something already exists there).")
+                + note
             outcome = nil
             await refreshAfterChange()
         } catch {
@@ -347,6 +382,10 @@ struct SecurityDetail: View {
             }
             if let o = sec.outcome {
                 Banner(icon: "trash", tint: .accentColor, text: summary(o)) {
+                    if !o.needsPrivileges.isEmpty {
+                        Button("Use Administrator Password…") { Task { await sec.trashWithPassword() } }
+                            .help("macOS asks for your password, then Sweep checks each item again and moves it to your Trash")
+                    }
                     if o.journal != nil { Button("Undo") { Task { await sec.undo() } } }
                     Button("Dismiss") { sec.outcome = nil }
                 }
@@ -364,7 +403,7 @@ struct SecurityDetail: View {
 
     private func summary(_ o: Outcome) -> String {
         var s = "Moved \(o.moved.count) item\(o.moved.count == 1 ? "" : "s") to the Trash."
-        if !o.needsPrivileges.isEmpty { s += " \(o.needsPrivileges.count) need admin rights and were left in place (not supported yet)." }
+        if !o.needsPrivileges.isEmpty { s += " \(o.needsPrivileges.count) belong to the system and need your administrator password." }
         if !o.failed.isEmpty { s += " \(o.failed.count) failed: \(o.failed[0].reason)" }
         return s
     }

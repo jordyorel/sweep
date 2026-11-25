@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::io::{BufRead, IsTerminal, Write};
 use sweep_core::removal::{self, Outcome};
 use sweep_core::{Env, Options};
-use sweep_malware::{check, persistence, presets, watch, xprotect};
+use sweep_malware::{check, persistence, presets, privileged, watch, xprotect};
 
 #[derive(Parser)]
 #[command(name = "sweep", version, about = "Uninstall apps (to the Trash, with undo) and check for malware on macOS")]
@@ -94,6 +94,14 @@ enum Cmd {
         #[arg(long)]
         status: bool,
     },
+    /// Internal: the root side of an administrator action (run by macOS's admin prompt, never by hand).
+    #[command(hide = true)]
+    Privileged {
+        /// `trash` or `restore`.
+        action: String,
+        #[arg(long)]
+        request: PathBuf,
+    },
     /// Security check of one app: signature, notarization, quarantine, malware signatures.
     Check { app: PathBuf },
 }
@@ -168,6 +176,23 @@ fn main() -> Result<()> {
                 return print_json(&out);
             }
             print_outcome(&out);
+            if !out.needs_privileges.is_empty() && (yes || confirm("Use your administrator password to move them too?")?) {
+                let req = privileged::TrashRequest {
+                    kind: privileged::Kind::Leftovers,
+                    app: Some(report.bundle.path.clone()),
+                    paths: out.needs_privileges.iter().map(|p| p.path.clone()).collect(),
+                    uid: privileged::current_uid(),
+                };
+                let exe = std::env::current_exe()?;
+                let (resp, id) = privileged::trash_with_password(&exe, &env, &req, out.journal.as_deref(), &plan.app_name)?;
+                println!("moved {} more items to the Trash with administrator rights", resp.moved.len());
+                for f in &resp.failed {
+                    println!("  failed: {}: {}", tilde(&f.path), f.reason);
+                }
+                if let Some(id) = id {
+                    println!("undo with: sweep undo   (id {id})");
+                }
+            }
         }
         Cmd::Undo { id, list } => {
             if list {
@@ -196,6 +221,14 @@ fn main() -> Result<()> {
             }
             for f in &u.failed {
                 println!("  failed: {}: {}", tilde(&f.path), f.reason);
+            }
+            if !u.needs_privileges.is_empty() {
+                println!("{} system items were moved with administrator rights; putting them back needs your password", u.needs_privileges.len());
+                let resp = privileged::undo_with_password(&std::env::current_exe()?, &env, &u.journal, u.needs_privileges.clone(), privileged::current_uid())?;
+                println!("restored {} system items", resp.restored.len());
+                for f in &resp.failed {
+                    println!("  failed: {}: {}", tilde(&f.path), f.reason);
+                }
             }
             if !u.conflicts.is_empty() || !u.failed.is_empty() {
                 println!("run `sweep undo {}` again once fixed", u.journal);
@@ -306,6 +339,29 @@ fn main() -> Result<()> {
                     println!("!! [{}] {:?} {}", a.risk, a.change, tilde(&a.plist));
                 }
             }
+        }
+        Cmd::Privileged { action, request } => {
+            anyhow::ensure!(unsafe { libc::geteuid() } == 0, "this command only runs as root, behind the administrator prompt");
+            let bytes = std::fs::read(&request)?;
+            let resp = match action.as_str() {
+                "trash" => {
+                    let req: privileged::TrashRequest = serde_json::from_slice(&bytes)?;
+                    let home = privileged::user_home(req.uid)?;
+                    let env = Env::for_home(&home);
+                    let rules = if req.kind == privileged::Kind::Malware { Some(xprotect::Rules::load_system()?) } else { None };
+                    let items = privileged::validate_trash(&req, &env, &home, rules.as_ref())?;
+                    privileged::trash_as_root(&items, &env, &home, req.uid)
+                }
+                "restore" => {
+                    let req: privileged::RestoreRequest = serde_json::from_slice(&bytes)?;
+                    let home = privileged::user_home(req.uid)?;
+                    privileged::validate_restore(&req, &home)?;
+                    privileged::restore_as_root(&req)
+                }
+                other => anyhow::bail!("unknown action {other}"),
+            };
+            // One line: `do shell script` turns newlines into carriage returns.
+            print!("{}", serde_json::to_string(&resp)?);
         }
         Cmd::Check { app } => {
             let rules = xprotect::Rules::load_system()?;
@@ -423,7 +479,7 @@ fn print_outcome(out: &Outcome) {
         println!("  {} already gone", out.missing.len());
     }
     for p in &out.needs_privileges {
-        println!("  needs admin rights (not supported yet), left in place: {}", tilde(&p.path));
+        println!("  owned by the system, needs your administrator password: {}", tilde(&p.path));
     }
     for p in &out.failed {
         println!("  failed: {}: {}", tilde(&p.path), p.reason);

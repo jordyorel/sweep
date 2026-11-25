@@ -5,12 +5,12 @@
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::ffi::{c_char, CStr, CString};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use sweep_malware::xprotect::{Rules, ScanSummary, DEFAULT_MAX_FILE_SIZE};
 use sweep_malware::presets::{self, Preset};
-use sweep_malware::{check, persistence};
+use sweep_malware::{check, persistence, privileged};
 use sweep_core::removal::{self, Plan, PlanItem};
 use sweep_core::Category;
 use sweep_core::{Env, Options};
@@ -257,6 +257,60 @@ pub unsafe extern "C" fn sweep_trash_findings(kind: *const c_char, paths_json: *
         let plan = Plan { app_name: name.into(), app_path: paths[0].clone(), items };
         // allow_running: there is no app bundle here; a running daemon is booted out by launchd rules, not by us.
         removal::execute(&plan, &Env::system(), &removal::System, true)
+    })
+}
+
+/// The bundled CLI (`Contents/Helpers/sweep`) that macOS runs as root behind the administrator prompt.
+fn helper() -> Result<PathBuf> {
+    let exe = std::env::current_exe()?;
+    let h = exe.parent().and_then(Path::parent).context("unexpected app layout")?.join("Helpers/sweep");
+    anyhow::ensure!(h.is_file(), "the sweep helper is missing from the app bundle");
+    Ok(h)
+}
+
+/// Move root-owned items to the Trash behind macOS's administrator prompt (`{"response": Response,
+/// "journal": id|null}`). `kind`: `leftovers` (with `app`), `launch_item` or `malware`. `journal`: the undo
+/// journal of the unprivileged part of the same removal, so one Undo covers both (may be NULL).
+/// The root side re-validates every path (see `sweep_malware::privileged`). Blocks while the prompt is shown.
+///
+/// # Safety
+/// `kind` and `paths_json` must be valid NUL-terminated strings; `app` and `journal` may be NULL.
+#[no_mangle]
+pub unsafe extern "C" fn sweep_trash_privileged(
+    kind: *const c_char,
+    app: *const c_char,
+    paths_json: *const c_char,
+    journal: *const c_char,
+) -> *mut c_char {
+    let (kind, app, paths, journal) = unsafe { (arg(kind), arg(app), arg(paths_json), arg(journal)) };
+    respond(move || {
+        let kind: privileged::Kind = serde_json::from_value(serde_json::Value::String(kind?.context("missing kind")?))?;
+        let app = app?.map(PathBuf::from);
+        let paths: Vec<PathBuf> = serde_json::from_str(&paths?.context("missing paths")?)?;
+        let journal = journal?;
+        let label = match (&app, kind) {
+            (Some(a), _) => a.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
+            (None, privileged::Kind::LaunchItem) => "Launch items".into(),
+            (None, _) => "Malware".into(),
+        };
+        let req = privileged::TrashRequest { kind, app, paths, uid: privileged::current_uid() };
+        let (resp, id) = privileged::trash_with_password(&helper()?, &Env::system(), &req, journal.as_deref(), &label)?;
+        Ok(serde_json::json!({ "response": resp, "journal": id }))
+    })
+}
+
+/// Put back the root-owned items of journal `id` behind the administrator prompt (`Response`).
+///
+/// # Safety
+/// `id` must be a valid NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn sweep_undo_privileged(id: *const c_char) -> *mut c_char {
+    let id = unsafe { arg(id) };
+    respond(move || {
+        let id = id?.context("missing journal id")?;
+        let env = Env::system();
+        let j = removal::journals(&env).into_iter().find(|j| j.id == id).with_context(|| format!("no undo entry {id}"))?;
+        privileged::undo_with_password(&helper()?, &env, &id, j.items, privileged::current_uid())
     })
 }
 
