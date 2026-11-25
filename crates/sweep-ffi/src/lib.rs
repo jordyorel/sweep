@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use sweep_malware::xprotect::{Rules, ScanSummary, DEFAULT_MAX_FILE_SIZE};
+use sweep_malware::presets::{self, Preset};
 use sweep_malware::{check, persistence};
 use sweep_core::removal::{self, Plan, PlanItem};
 use sweep_core::Category;
@@ -183,6 +184,33 @@ pub unsafe extern "C" fn sweep_scan_folder(path: *const c_char, token: u64) -> *
         };
         rules.scan_until(&path, DEFAULT_MAX_FILE_SIZE, &mut summary, &stop);
         Ok(FolderScan { path, xprotect_version: rules.version.clone(), summary })
+    })
+}
+
+/// Quick or full scan (`FolderScan`, whose `path` is the preset's title). `preset`: `quick` or `full`.
+/// Cancellable and reports progress like [`sweep_scan_folder`].
+///
+/// # Safety
+/// `preset` must be a valid NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn sweep_scan_preset(preset: *const c_char, token: u64) -> *mut c_char {
+    let preset = unsafe { arg(preset) };
+    respond(move || {
+        let name = preset?.context("missing preset")?;
+        let p = Preset::parse(&name).with_context(|| format!("unknown scan preset {name}"))?;
+        let rules = rules()?;
+        let mut summary = ScanSummary::default();
+        let stop = || {
+            SCAN_PROGRESS.fetch_add(1, Ordering::Relaxed);
+            SCAN_TOKEN.load(Ordering::SeqCst) != token
+        };
+        for t in presets::targets(p, &home()) {
+            rules.scan_until(&t, DEFAULT_MAX_FILE_SIZE, &mut summary, &stop);
+            if summary.cancelled {
+                break;
+            }
+        }
+        Ok(FolderScan { path: PathBuf::from(p.title()), xprotect_version: rules.version.clone(), summary })
     })
 }
 

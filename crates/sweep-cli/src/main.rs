@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::io::{BufRead, IsTerminal, Write};
 use sweep_core::removal::{self, Outcome};
 use sweep_core::{Env, Options};
-use sweep_malware::{check, persistence, watch, xprotect};
+use sweep_malware::{check, persistence, presets, watch, xprotect};
 
 #[derive(Parser)]
 #[command(name = "sweep", version, about = "Uninstall apps (to the Trash, with undo) and check for malware on macOS")]
@@ -58,8 +58,14 @@ enum Cmd {
     },
     /// Scan files or folders with Apple's XProtect malware signatures.
     Malware {
-        #[arg(required = true)]
+        #[arg(required_unless_present_any = ["quick", "full"])]
         paths: Vec<PathBuf>,
+        /// Scan the places Mac malware usually lives (a couple of minutes).
+        #[arg(long, conflicts_with_all = ["full", "paths"])]
+        quick: bool,
+        /// Scan the home folder, apps, Library folders, shared/temporary folders and Homebrew (long).
+        #[arg(long, conflicts_with = "paths")]
+        full: bool,
         /// Skip files larger than this many MB.
         #[arg(long, default_value_t = 128)]
         max_size_mb: u64,
@@ -195,8 +201,16 @@ fn main() -> Result<()> {
                 println!("run `sweep undo {}` again once fixed", u.journal);
             }
         }
-        Cmd::Malware { paths, max_size_mb } => {
-            let (version, sum) = xprotect::scan_paths(&paths, max_size_mb * 1024 * 1024)?;
+        Cmd::Malware { paths, quick, full, max_size_mb } => {
+            let preset = if quick { Some(presets::Preset::Quick) } else if full { Some(presets::Preset::Full) } else { None };
+            let targets = match preset {
+                Some(p) => presets::targets(p, &home()),
+                None => paths,
+            };
+            if let (Some(p), false) = (preset, cli.json) {
+                eprintln!("{}: {} locations", p.title(), targets.len());
+            }
+            let (version, sum) = xprotect::scan_paths(&targets, max_size_mb * 1024 * 1024)?;
             if cli.json {
                 return print_json(&serde_json::json!({ "xprotect_version": version, "summary": sum }));
             }

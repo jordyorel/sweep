@@ -169,6 +169,8 @@ enum Core {
     static func cancelFolderScan() { sweep_scan_cancel() }
     static func folderScanProgress() -> UInt64 { sweep_scan_progress() }
     static func scanFolder(_ path: String, token: UInt64) throws -> FolderScan { try call { sweep_scan_folder(path, token) } }
+    /// `preset`: "quick" or "full".
+    static func scanPreset(_ preset: String, token: UInt64) throws -> FolderScan { try call { sweep_scan_preset(preset, token) } }
 
     /// `kind`: "launch_item" or "malware". Each path is re-checked by the core before it is moved.
     static func trashFindings(kind: String, paths: [String]) throws -> Outcome {

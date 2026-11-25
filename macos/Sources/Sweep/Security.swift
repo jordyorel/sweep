@@ -36,6 +36,8 @@ final class SecurityModel {
     var progress: UInt64 = 0
     var scan: FolderScan?
     var scannedAt: Date?
+    /// Detections moved to the Trash since the scan (put back in the list if the move is undone).
+    private var removedDetections: [Detection] = []
 
     var error: String?
     /// Last move to the Trash from this section, with Undo.
@@ -70,7 +72,7 @@ final class SecurityModel {
     }
 
     init() {
-        // Dev hook: `--scan-folder <path>` opens the Malware Scan page and scans it (checked by screenshot).
+        // Dev hooks (checked by screenshot): `--security-page <name>`, `--scan-folder <path>`, `--scan-preset quick|full`.
         let args = ProcessInfo.processInfo.arguments
         if let i = args.firstIndex(of: "--security-page"), i + 1 < args.count {
             page = SecurityPage.allCases.first { $0.rawValue.lowercased().hasPrefix(args[i + 1].lowercased()) }
@@ -80,14 +82,31 @@ final class SecurityModel {
             let p = args[i + 1]
             Task { await scanFolder(p) }
         }
+        if let i = args.firstIndex(of: "--scan-preset"), i + 1 < args.count {
+            page = .malwareScan
+            let p = args[i + 1]
+            Task { await scanPreset(p) }
+        }
     }
 
     func scanFolder(_ path: String) async {
+        await runScan(label: Format.tilde(path)) { token in try Core.scanFolder(path, token: token) }
+    }
+
+    /// `preset`: "quick" or "full".
+    func scanPreset(_ preset: String) async {
+        await runScan(label: preset == "full" ? "your whole Mac" : "the usual malware locations") { token in
+            try Core.scanPreset(preset, token: token)
+        }
+    }
+
+    private func runScan(label: String, _ work: @escaping @Sendable (UInt64) throws -> FolderScan) async {
         scanning = true
-        scanTarget = path
+        scanTarget = label
         scan = nil
         error = nil
         progress = 0
+        removedDetections = []
         let token = Core.beginFolderScan()
         let poll = Task {
             while !Task.isCancelled {
@@ -100,7 +119,7 @@ final class SecurityModel {
             scanning = false
         }
         do {
-            scan = try await Task.detached { try Core.scanFolder(path, token: token) }.value
+            scan = try await Task.detached { try work(token) }.value
             scannedAt = Date()
         } catch {
             self.error = error.localizedDescription
@@ -134,9 +153,20 @@ final class SecurityModel {
         }
     }
 
+    /// After a move to the Trash or an undo: re-audit launch items (fast), and update the scan result in place
+    /// instead of re-running a scan that may take many minutes.
     private func refreshAfterChange() async {
         if !jobs.isEmpty { await audit() }
-        if let s = scan { await scanFolder(s.path) }
+        guard let s = scan else { return }
+        let all = s.summary.detections + removedDetections
+        let present = all.filter { FileManager.default.fileExists(atPath: $0.path) }
+        var seen = Set<String>()
+        let unique = present.filter { seen.insert("\($0.path)|\($0.rule)").inserted }
+        removedDetections = all.filter { !FileManager.default.fileExists(atPath: $0.path) }
+        let sum = s.summary
+        scan = FolderScan(path: s.path, xprotectVersion: s.xprotectVersion,
+                          summary: ScanSummary(filesScanned: sum.filesScanned, filesSkipped: sum.filesSkipped,
+                                               detections: unique, errors: sum.errors, cancelled: sum.cancelled))
     }
 
     static func chooseFolder() -> String? {
@@ -380,7 +410,7 @@ struct OverviewView: View {
                     tile(symbol: "magnifyingglass", tone: sec.scan == nil ? .neutral : (sec.detections == 0 ? .good : .danger),
                          title: "Malware Scan",
                          value: sec.scan == nil ? "Not run yet" : (sec.detections == 0 ? "Nothing found" : "\(sec.detections) detected"),
-                         caption: sec.scan.map { "\($0.summary.filesScanned) files in \(Format.tilde($0.path))" } ?? "Scan Downloads or any folder",
+                         caption: sec.scan.map { "\($0.summary.filesScanned) files in \(Format.tilde($0.path))" } ?? "Quick scan, full scan, or any folder",
                          page: .malwareScan)
                     watchTile
                 }
@@ -697,14 +727,13 @@ struct MalwareScanView: View {
     @Environment(SecurityModel.self) private var sec
     private let confirming = State(initialValue: false)
 
-    private var downloads: String { FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first?.path ?? NSHomeDirectory() + "/Downloads" }
-
     var body: some View {
         VStack(spacing: 0) {
             PageHeader(symbol: headerSymbol, tone: headerTone, title: "Malware Scan",
                        subtitle: "Checks files against the malware signatures Apple ships with macOS. Nothing leaves your Mac.") {
                 if sec.scan != nil && !sec.scanning {
-                    Button { Task { await sec.scanFolder(downloads) } } label: { Label("Scan Downloads", systemImage: "arrow.down.circle") }
+                    Button { Task { await sec.scanPreset("quick") } } label: { Label("Quick Scan", systemImage: "bolt.shield") }
+                    Button { Task { await sec.scanPreset("full") } } label: { Label("Full Scan", systemImage: "internaldrive") }
                     Button { if let p = SecurityModel.chooseFolder() { Task { await sec.scanFolder(p) } } } label: { Label("Choose…", systemImage: "folder") }
                 }
             }
@@ -728,7 +757,9 @@ struct MalwareScanView: View {
                         Text("items").font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                Text("Scanning \(Format.tilde(sec.scanTarget ?? ""))").font(.headline)
+                Text("Scanning \(sec.scanTarget ?? "")").font(.headline)
+                Text("You can keep using your Mac, or stop at any time and see what was found so far.")
+                    .font(.callout).foregroundStyle(.secondary)
                 Button("Stop") { sec.cancelScan() }.controlSize(.large)
             }
         } else if let s = sec.scan, s.summary.filesScanned == 0, s.summary.detections.isEmpty, let err = s.summary.errors.first {
@@ -747,15 +778,16 @@ struct MalwareScanView: View {
     }
 
     private var start: some View {
-        VStack(spacing: 22) {
-            Button { Task { await sec.scanFolder(downloads) } } label: {
+        VStack(spacing: 24) {
+            Button { Task { await sec.scanPreset("quick") } } label: {
                 ZStack {
                     Circle().fill(LinearGradient(colors: [Color(red: 0.18, green: 0.80, blue: 0.75), Color(red: 0.05, green: 0.45, blue: 0.85)],
                                                  startPoint: .topLeading, endPoint: .bottomTrailing))
                     Circle().strokeBorder(.white.opacity(0.25), lineWidth: 1)
                     VStack(spacing: 6) {
-                        Image(systemName: "arrow.down.circle").font(.system(size: 40, weight: .semibold))
-                        Text("Scan Downloads").font(.headline)
+                        Image(systemName: "bolt.shield.fill").font(.system(size: 40, weight: .semibold))
+                        Text("Quick Scan").font(.headline)
+                        Text("about 2 min").font(.caption).opacity(0.85)
                     }
                     .foregroundStyle(.white)
                 }
@@ -763,10 +795,42 @@ struct MalwareScanView: View {
                 .shadow(color: .blue.opacity(0.35), radius: 18, y: 6)
             }
             .buttonStyle(.plain)
-            Button("Choose a folder, disk image or file…") { if let p = SecurityModel.chooseFolder() { Task { await sec.scanFolder(p) } } }
-                .buttonStyle(.link)
-            Text("Your Downloads folder is where most Mac malware arrives.").font(.callout).foregroundStyle(.secondary)
+            .help("Downloads, Desktop, apps, Application Support, launch items, shared and temporary folders, hidden files in your home folder")
+            HStack(spacing: 14) {
+                option(symbol: "internaldrive", title: "Full Scan", detail: "Your home folder, apps and Library folders. Can take a long time.") {
+                    Task { await sec.scanPreset("full") }
+                }
+                option(symbol: "folder", title: "Choose a Folder", detail: "A folder, a disk image or a single file.") {
+                    if let p = SecurityModel.chooseFolder() { Task { await sec.scanFolder(p) } }
+                }
+            }
+            .frame(maxWidth: 560)
+            .fixedSize(horizontal: false, vertical: true) // both cards take the taller one's height
+            if !Core.hasFullDiskAccess() {
+                Label("Give Sweep Full Disk Access so scans can read Documents, Desktop, Mail and other protected folders.",
+                      systemImage: "lock.shield")
+                    .font(.callout).foregroundStyle(.orange)
+            }
         }
+        .padding(24)
+    }
+
+    private func option(symbol: String, title: String, detail: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Card(padding: 14) {
+                HStack(alignment: .top, spacing: 12) {
+                    IconTile(symbol: symbol, tone: .notice)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(title).font(.headline)
+                        Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .frame(maxHeight: .infinity, alignment: .top)
+            }
+            .frame(maxHeight: .infinity)
+        }
+        .buttonStyle(.plain)
     }
 
     private func result(_ s: FolderScan) -> some View {
