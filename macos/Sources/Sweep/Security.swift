@@ -89,15 +89,36 @@ final class SecurityModel {
         }
     }
 
+    /// What the last scan was, for "Scan Again".
+    private enum LastScan { case folder(String), preset(String) }
+    private var lastScan: LastScan?
+
     func scanFolder(_ path: String) async {
+        lastScan = .folder(path)
         await runScan(label: Format.tilde(path)) { token in try Core.scanFolder(path, token: token) }
     }
 
     /// `preset`: "quick" or "full".
     func scanPreset(_ preset: String) async {
+        lastScan = .preset(preset)
         await runScan(label: preset == "full" ? "your whole Mac" : "the usual malware locations") { token in
             try Core.scanPreset(preset, token: token)
         }
+    }
+
+    func scanAgain() async {
+        switch lastScan {
+        case .folder(let p): await scanFolder(p)
+        case .preset(let p): await scanPreset(p)
+        case nil: break
+        }
+    }
+
+    /// Back to the scan choices (the result is dropped; the Overview tile then shows "Not run yet").
+    func newScan() {
+        scan = nil
+        scannedAt = nil
+        removedDetections = []
     }
 
     private func runScan(label: String, _ work: @escaping @Sendable (UInt64) throws -> FolderScan) async {
@@ -771,9 +792,9 @@ struct MalwareScanView: View {
             PageHeader(symbol: headerSymbol, tone: headerTone, title: "Malware Scan",
                        subtitle: "Checks files against the malware signatures Apple ships with macOS. Nothing leaves your Mac.") {
                 if sec.scan != nil && !sec.scanning {
-                    Button { Task { await sec.scanPreset("quick") } } label: { Label("Quick Scan", systemImage: "bolt.shield") }
-                    Button { Task { await sec.scanPreset("full") } } label: { Label("Full Scan", systemImage: "internaldrive") }
-                    Button { if let p = SecurityModel.chooseFolder() { Task { await sec.scanFolder(p) } } } label: { Label("Choose…", systemImage: "folder") }
+                    Button { sec.newScan() } label: { Label("New Scan", systemImage: "chevron.left") }
+                        .help("Back to Quick Scan, Full Scan and Choose a Folder")
+                    Button { Task { await sec.scanAgain() } } label: { Label("Scan Again", systemImage: "arrow.clockwise") }
                 }
             }
             Divider()
